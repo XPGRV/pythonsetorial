@@ -1,0 +1,25 @@
+# Segredos — nunca versionar
+.env
+*.env
+**/.env
+
+# Config local de ferramentas
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Dados / planilhas baixadas (não versionar)
+*.xlsm
+*.xlsx
+*.xls
+*.csv
+*.parquet
+
+# Sistema
+.DS_Store
+Thumbs.db
