@@ -178,7 +178,11 @@ def _approx_equal(a: float, b: float, tol: float = 1e-9) -> bool:
 
 
 def update_production(nass_data: dict[tuple[int, int], float]) -> dict:
-    path = localizar_planilha()
+    # Baixa a planilha do Google Drive (em vez do drive montado em G:\).
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import drive_io
+    fid = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(fid)
 
     wb = openpyxl.load_workbook(str(path), keep_vba=True, data_only=False)
     try:
@@ -245,7 +249,7 @@ def update_production(nass_data: dict[tuple[int, int], float]) -> dict:
 
         total = novos + revisoes + fmt_fix
         if total > 0:
-            wb.save(str(path))
+            wb.save(str(path)); drive_io.update_file(fid, path)
             msg_parts = []
             if novos:    msg_parts.append(f"{novos} nova(s)")
             if revisoes: msg_parts.append(f"{revisoes} revisão/revisões")

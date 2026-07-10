@@ -258,7 +258,11 @@ def update_column(
 
 
 def update_production(nass_data: dict[tuple[int, int], float]) -> None:
-    path = localizar_planilha()
+    # Baixa a planilha do Google Drive (em vez do drive montado em G:\).
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import drive_io
+    fid = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(fid)
 
     wb = openpyxl.load_workbook(str(path), keep_vba=True, data_only=False)
     try:
@@ -306,7 +310,7 @@ def update_production(nass_data: dict[tuple[int, int], float]) -> None:
 
         total = nov_e + rev_e + formulas_written
         if total > 0:
-            wb.save(str(path))
+            wb.save(str(path)); drive_io.update_file(fid, path)
             print(f"\nSalvo.")
             print(f"  Col E: {nov_e} nova(s), {rev_e} revisão/revisões")
             print(f"  Col F: {formulas_written} fórmula(s) escritas")

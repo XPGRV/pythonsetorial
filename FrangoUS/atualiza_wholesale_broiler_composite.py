@@ -230,7 +230,11 @@ def update_frangous(data: dict[tuple[int, int], float]) -> dict:
     """
     Abre FrangoUS.xlsm (keep_vba=True) e atualiza a coluna T.
     """
-    path = localizar_planilha()
+    # Baixa a planilha do Google Drive (em vez do drive montado em G:\).
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import drive_io
+    fid = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(fid)
 
     wb = openpyxl.load_workbook(str(path), keep_vba=True, data_only=False)
     try:
@@ -271,7 +275,7 @@ def update_frangous(data: dict[tuple[int, int], float]) -> dict:
 
         total = novos + revisoes
         if total > 0:
-            wb.save(str(path))
+            wb.save(str(path)); drive_io.update_file(fid, path)
             print(f"Salvo. {total} célula(s) alterada(s) ({novos} nova(s), {revisoes} revisão/revisões).")
             for u in updates[:50]:
                 print(u)

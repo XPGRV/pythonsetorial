@@ -293,7 +293,11 @@ def _copy_row_format(ws, src_row: int, dst_row: int, n_cols: int) -> None:
 
 
 def update_sheet(week_list: list[WeekData], dry_run: bool = False) -> dict:
-    path = localizar_planilha()
+    # Baixa a planilha do Google Drive (em vez do drive montado em G:\).
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import drive_io
+    fid = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(fid)
 
     wb = openpyxl.load_workbook(str(path), keep_vba=True, data_only=False)
     try:
@@ -332,7 +336,7 @@ def update_sheet(week_list: list[WeekData], dry_run: bool = False) -> dict:
             )
 
         if novos > 0 and not dry_run:
-            wb.save(str(path))
+            wb.save(str(path)); drive_io.update_file(fid, path)
             print(f"Salvo. {novos} semana(s) adicionada(s), {skipped} ja existia(m).")
         elif novos > 0:
             print(f"[DRY-RUN] {novos} semana(s) seriam adicionadas, {skipped} ja existem.")
