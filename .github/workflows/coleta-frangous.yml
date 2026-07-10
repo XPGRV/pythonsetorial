@@ -5,8 +5,8 @@ name: Coleta FrangoUS
 # Por enquanto SO manual (workflow_dispatch) — sem agendamento ate validarmos
 # e coordenarmos com a etapa Bloomberg.
 #
-# Ainda de fora (a fazer): national_composite_price (le+grava em 2 funcoes) e
-# abates_frangous_usda (precisa reescrever xlwings -> openpyxl).
+# Ainda de fora: atualizar_frangoUS.py (consolidador, roda na maquina Windows
+# junto do Bloomberg).
 #
 # Secrets: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
 #          NASS_API_KEY, MARS_API_KEY
@@ -38,6 +38,9 @@ jobs:
       - name: production chicks hatched (coluna G)
         run: python FrangoUS/atualiza_production_frangous_chicks_hatched.py
 
+      - name: abates USDA (coluna H)
+        run: python FrangoUS/atualiza_abates_frangous_usda.py
+
       - name: production rate of lay (coluna D)
         run: python FrangoUS/atualiza_production_frangous_rateolay.py
 
@@ -52,3 +55,6 @@ jobs:
 
       - name: national composite (aba NationalComposite)
         run: python FrangoUS/atualiza_national_composite.py
+
+      - name: national composite price (coluna U)
+        run: python FrangoUS/atualiza_national_composite_price.py
