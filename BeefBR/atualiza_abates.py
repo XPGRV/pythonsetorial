@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import sys
+import time
 from copy import copy
 from pathlib import Path
 import openpyxl
@@ -31,8 +32,19 @@ def shift_formula(formula, delta):
 
 
 def fetch_data():
-    response = requests.get(SIF_URL, timeout=120)
-    response.raise_for_status()
+    # O servidor do MAPA (CKAN) e instavel e as vezes da timeout — tenta varias vezes.
+    last_err = None
+    for attempt in range(1, 6):
+        try:
+            response = requests.get(SIF_URL, timeout=180)
+            response.raise_for_status()
+            break
+        except requests.exceptions.RequestException as e:
+            last_err = e
+            print(f"  MAPA tentativa {attempt}/5 falhou ({type(e).__name__}); nova tentativa em {10*attempt}s...")
+            time.sleep(10 * attempt)
+    else:
+        raise RuntimeError(f"MAPA/SIF indisponivel apos 5 tentativas: {last_err}")
     frame = None
     for encoding in ("utf-8", "latin-1", "cp1252"):
         try:
