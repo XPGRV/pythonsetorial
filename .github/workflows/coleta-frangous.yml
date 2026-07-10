@@ -5,8 +5,9 @@ name: Coleta FrangoUS
 # Por enquanto SO manual (workflow_dispatch) — sem agendamento ate validarmos
 # e coordenarmos com a etapa Bloomberg.
 #
-# Ainda de fora: atualizar_frangoUS.py (consolidador, roda na maquina Windows
-# junto do Bloomberg).
+# O consolidador (atualizar_frangoUS) roda por ULTIMO, depois dos coletores —
+# ele "puxa" as formulas ate as linhas novas de dados. As formulas so ganham
+# valor quando o PC Bloomberg abrir e recalcular (etapa seguinte do fluxo).
 #
 # Secrets: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
 #          NASS_API_KEY, MARS_API_KEY
@@ -58,3 +59,7 @@ jobs:
 
       - name: national composite price (coluna U)
         run: python FrangoUS/atualiza_national_composite_price.py
+
+      # Consolidador — por ULTIMO: puxa as formulas ate as linhas novas.
+      - name: consolidador FrangoUS (extend formulas)
+        run: python FrangoUS/atualizar_frangoUS.py
