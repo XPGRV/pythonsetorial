@@ -279,7 +279,11 @@ def update_frangous(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    path = localizar_planilha()
+    # Baixa a planilha do Google Drive (em vez do drive montado em G:\).
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import drive_io
+    fid = drive_io.find_file_id(XLSX_NAME)
+    path = Path(drive_io.download_to_temp(fid))
     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] atualiza_national_composite_price.py")
     print(f"Arquivo: {path.name}\n")
 
@@ -302,6 +306,8 @@ def main() -> None:
 
     print(f"Atualizando coluna U (National Composite)...")
     result = update_frangous(path, usda_data, nc_months)
+    if result["total"] > 0:
+        drive_io.update_file(fid, str(path))   # sobe de volta pro Drive (in-place)
 
     print(
         f"\n[{dt.datetime.now():%Y-%m-%d %H:%M}] Concluído. "

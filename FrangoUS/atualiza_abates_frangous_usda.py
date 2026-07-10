@@ -10,13 +10,15 @@ Coluna escrita:
 """
 
 import io
+import sys
 import time
 import datetime as dt
+from copy import copy
 from pathlib import Path
 
 import requests
 import openpyxl
-import xlwings as xw
+from openpyxl.utils import column_index_from_string
 
 
 # ============================================================
@@ -150,7 +152,11 @@ def parse_usda(conteudo: bytes) -> dict:
 # MAIN
 # ============================================================
 def main():
-    path = localizar_planilha()
+    # Baixa a planilha do Google Drive (em vez do drive montado em G:\).
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import drive_io
+    fid  = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(fid)
 
     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] Iniciando atualização USDA — FrangoUS Commercial Slaughter...")
 
@@ -162,27 +168,19 @@ def main():
         print("Nenhum dado encontrado. Encerrando.")
         return
 
-    print(f"\n[2/3] Abrindo {path.name} via xlwings...")
-    app = xw.App(visible=False, add_book=False)
+    print("\n[2/3] Abrindo FrangoUS.xlsm via openpyxl...")
+    wb = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
     try:
-        app.api.AskToUpdateLinks = False
-        app.display_alerts       = False
-        app.screen_updating      = False
-
-        wb_xw = app.books.open(str(path), update_links=0, read_only=False)
-        try:
-            print("\n[3/3] Gravando dados na planilha...")
-            resultado = processar(wb_xw, dados)
-            if resultado["salvar"]:
-                wb_xw.api.SaveLinkValues = True
-                wb_xw.save()
-                print("Arquivo salvo.")
-            else:
-                print("Nada alterado — arquivo NÃO salvo.")
-        finally:
-            wb_xw.close()
+        print("\n[3/3] Gravando dados na planilha...")
+        resultado = processar(wb, dados)
+        if resultado["salvar"]:
+            wb.save(path)
+            drive_io.update_file(fid, path)   # sobe de volta pro Drive (in-place)
+            print("Arquivo salvo.")
+        else:
+            print("Nada alterado — arquivo NÃO salvo.")
     finally:
-        app.quit()
+        wb.close()
 
     print_relatorio(resultado)
 
@@ -190,24 +188,18 @@ def main():
 # ============================================================
 # PROCESSAMENTO
 # ============================================================
-def processar(wb_xw, dados: dict) -> dict:
-    sh = wb_xw.sheets[SHEET_NAME]
+def processar(wb, dados: dict) -> dict:
+    ws = wb[SHEET_NAME]
 
     hoje         = dt.date.today()
     corte_rev    = hoje - dt.timedelta(days=REVISION_MONTHS * 31)
     corte_anoMes = (corte_rev.year, corte_rev.month)
 
-    last_row = sh.used_range.last_cell.row
+    last_row = ws.max_row
 
-    # Lê col B (datas) e col H (valores atuais)
-    datas_col_b  = sh.range(f"B3:B{last_row}").value
-    broilers_col = sh.range(f"H3:H{last_row}").value
-
-    if not isinstance(datas_col_b, list):
-        datas_col_b = [datas_col_b]
-    if not isinstance(broilers_col, list):
-        broilers_col = [broilers_col]
-    broilers_col = [v[0] if isinstance(v, (list, tuple)) else v for v in broilers_col]
+    # Lê col B (datas) e col H (valores atuais), a partir da linha 3.
+    datas_col_b  = [ws.cell(row=r, column=2).value for r in range(3, last_row + 1)]
+    broilers_col = [ws.cell(row=r, column=8).value for r in range(3, last_row + 1)]
 
     contadores = {"novas": 0, "revisoes": 0}
     revisoes   = []
@@ -238,8 +230,8 @@ def processar(wb_xw, dados: dict) -> dict:
             revisoes.append((rotulo, atual, novo_val))
             escrita[linha] = novo_val
 
-    _escrever_col(sh, escrita, COL_BROILERS, "Commercial Slaughter H")
-    _propagar_formato_col(sh, escrita, COL_BROILERS)
+    _escrever_col(ws, escrita, COL_BROILERS, "Commercial Slaughter H")
+    _propagar_formato_col(ws, escrita, COL_BROILERS)
 
     return {
         "salvar":      bool(escrita),
@@ -267,24 +259,32 @@ def _blocos(linhas_sorted: list[int]) -> list[tuple[int, int]]:
     return blocos
 
 
-def _escrever_col(sh, escrita: dict, col: str, label: str):
+def _escrever_col(ws, escrita: dict, col: str, label: str):
     if not escrita:
         return
+    ci = column_index_from_string(col)
     for ini, fim in _blocos(sorted(escrita)):
-        valores = [[escrita[l]] for l in range(ini, fim + 1) if l in escrita]
-        sh.range(f"{col}{ini}:{col}{fim}").value = valores
+        for l in range(ini, fim + 1):
+            if l in escrita:
+                ws.cell(row=l, column=ci).value = escrita[l]
         print(f"  [{label}] linhas {ini}:{fim} ({fim - ini + 1} meses)")
 
 
-def _propagar_formato_col(sh, escrita: dict, col: str):
+def _propagar_formato_col(ws, escrita: dict, col: str):
     """Para cada bloco escrito, copia o formato da célula imediatamente acima."""
     if not escrita:
         return
+    ci = column_index_from_string(col)
     for ini, fim in _blocos(sorted(escrita)):
         origem = max(ini - 1, 3)   # nunca sobe acima da linha 3
-        sh.range(f"{col}{origem}").api.Copy()
-        sh.range(f"{col}{ini}:{col}{fim}").api.PasteSpecial(Paste=-4122)   # xlPasteFormats
-        sh.book.app.api.CutCopyMode = False
+        src = ws.cell(row=origem, column=ci)
+        for l in range(ini, fim + 1):
+            dst = ws.cell(row=l, column=ci)
+            dst.number_format = src.number_format
+            dst.font          = copy(src.font)
+            dst.fill          = copy(src.fill)
+            dst.border        = copy(src.border)
+            dst.alignment     = copy(src.alignment)
         print(f"  [formato {col}] copiado de linha {origem} -> {ini}:{fim}")
 
 
