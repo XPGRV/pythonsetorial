@@ -201,6 +201,13 @@ def sincronizar_abates(ws_main, ws_abates) -> dict:
                     ws_main.cell(row=row, column=col).value in (None, "")
                     for col in range(ABATES_MAIN_COL_START, ABATES_MAIN_COL_END + 1)
                 )
+                or (
+                    ws_main.cell(row=row, column=COL_N).value not in (None, "")
+                    and any(
+                        ws_main.cell(row=row, column=col).value in (None, "")
+                        for col in (COL_O, COL_P)
+                    )
+                )
             ),
             None,
         )
@@ -209,7 +216,11 @@ def sincronizar_abates(ws_main, ws_abates) -> dict:
                 unmatched_periods += 1
             continue
 
-        for col in range(ABATES_MAIN_COL_START, ABATES_MAIN_COL_END + 1):
+        columns_to_fill = list(range(ABATES_MAIN_COL_START, ABATES_MAIN_COL_END + 1))
+        if ws_main.cell(row=target_row, column=COL_N).value not in (None, ""):
+            columns_to_fill.extend((COL_O, COL_P))
+
+        for col in columns_to_fill:
             target = ws_main.cell(row=target_row, column=col)
             if target.value not in (None, ""):
                 continue
