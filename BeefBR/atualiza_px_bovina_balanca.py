@@ -656,30 +656,137 @@ def main():
 
 
 def main_cloud_beefbr():
-    """Modo GitHub Actions: atualiza somente a aba BeefBR via Drive/openpyxl."""
-    import openpyxl
+    """Modo GitHub Actions: aplica SECEX mensal e Balanca apenas na ponta."""
     from copy import copy
     from pathlib import Path
     import sys
+
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     import drive_io
+
+    def month_key(value):
+        if isinstance(value, datetime.datetime):
+            value = value.date()
+        return (value.year, value.month) if isinstance(value, datetime.date) else None
+
+    def number(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def column_number(letters):
+        result = 0
+        for letter in letters.upper():
+            result = result * 26 + ord(letter) - ord("A") + 1
+        return result
+
+    def secex_source_column(ws, destination, fallback):
+        for row in range(ws.max_row, 4, -1):
+            formula = ws.cell(row, destination).value
+            if not isinstance(formula, str) or "SECEX!" not in formula.upper():
+                continue
+            match = re.search(r"(?:\[[^\]]+\])?SECEX!([A-Z]+)\d+", formula, re.I)
+            if match:
+                return column_number(match.group(1))
+        return fallback
+
+    def copy_style(ws, source_row, target_row, columns):
+        for column in columns:
+            source = ws.cell(source_row, column)
+            target = ws.cell(target_row, column)
+            target._style = copy(source._style)
+            target.font = copy(source.font)
+            target.fill = copy(source.fill)
+            target.border = copy(source.border)
+            target.alignment = copy(source.alignment)
+            target.number_format = source.number_format
+
     content = download_setores_produtos()
-    prices, year, month = parse_prices(content)
-    fid = drive_io.find_file_id(BEEFBR_NAME)
-    path = drive_io.download_to_temp(fid)
-    wb = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
+    prices, balance_year, balance_month = parse_prices(content)
+    file_id = drive_io.find_file_id(BEEFBR_NAME)
+    path = drive_io.download_to_temp(file_id)
+    workbook = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
     try:
-        ws = wb["BeefBR"]
-        row = sheet_row(year, month)
-        ws.cell(row, 5).value = prices["bovi"] / 1000
-        ws.cell(row, 5)._style = copy(ws.cell(row - 1, 5)._style)
-        ws.cell(row, 10).value = f"=E{row}*AN{row}"
-        ws.cell(row, 10)._style = copy(ws.cell(row - 1, 10)._style)
-        wb.save(path)
-        drive_io.update_file(fid, path)
-        print(f"Preco bovina BeefBR: {month:02d}/{year} atualizado.")
+        beef = workbook["BeefBR"]
+        secex = workbook["SECEX"]
+        bbg = workbook["BBG_Dados"]
+        beef_rows = {
+            month_key(beef.cell(row, 2).value): row
+            for row in range(5, beef.max_row + 1)
+            if month_key(beef.cell(row, 2).value)
+        }
+        secex_rows = {
+            month_key(secex.cell(row, 2).value): row
+            for row in range(3, secex.max_row + 1)
+            if month_key(secex.cell(row, 2).value)
+        }
+        price_col = secex_source_column(beef, 5, 10)
+        brl_col = secex_source_column(beef, 10, 11)
+
+        monthly_fx = {}
+        for row in range(4, bbg.max_row + 1):
+            day = bbg.cell(row, 4).value
+            rate = number(bbg.cell(row, 7).value)
+            if isinstance(day, datetime.datetime):
+                day = day.date()
+            if not isinstance(day, datetime.date) or rate is None:
+                continue
+            monthly_fx.setdefault((day.year, day.month), []).append(rate)
+        monthly_fx = {
+            period: sum(rates) / len(rates)
+            for period, rates in monthly_fx.items()
+            if rates
+        }
+
+        changes = 0
+        # O SECEX sempre tem prioridade quando o dado mensal existe.
+        for period, secex_row in secex_rows.items():
+            beef_row = beef_rows.get(period)
+            usd = number(secex.cell(secex_row, price_col).value)
+            brl = number(secex.cell(secex_row, brl_col).value)
+            if beef_row is None or usd is None or brl is None:
+                continue
+            copy_style(beef, max(5, beef_row - 1), beef_row, (5, 6, 10, 40))
+            beef.cell(beef_row, 5).value = usd
+            beef.cell(beef_row, 6).value = brl
+            beef.cell(beef_row, 10).value = brl
+            fx = monthly_fx.get(period)
+            if fx is not None:
+                beef.cell(beef_row, 40).value = fx
+            changes += 1
+
+        # A Balanca preenche somente o mes mais recente ainda sem SECEX.
+        period = balance_year, balance_month
+        beef_row = beef_rows.get(period)
+        secex_row = secex_rows.get(period)
+        secex_available = (
+            secex_row is not None
+            and number(secex.cell(secex_row, price_col).value) is not None
+        )
+        if beef_row is not None and not secex_available:
+            copy_style(beef, max(5, beef_row - 1), beef_row, (5, 6, 10, 40))
+            usd = prices["bovi"] / 1000
+            fx = monthly_fx.get(period)
+            beef.cell(beef_row, 5).value = usd
+            if fx is not None:
+                brl = usd * fx
+                beef.cell(beef_row, 6).value = brl
+                beef.cell(beef_row, 10).value = brl
+                beef.cell(beef_row, 40).value = fx
+            changes += 1
+
+        if changes:
+            workbook.calculation.fullCalcOnLoad = True
+            workbook.calculation.forceFullCalc = True
+            workbook.save(path)
+            drive_io.update_file(file_id, path)
+        print(
+            f"Preco BeefBR: {changes} mes(es) sincronizado(s); "
+            f"Balanca {balance_month:02d}/{balance_year} "
+            f"{'ignorada (SECEX disponivel)' if secex_available else 'aplicada na ponta'}.")
     finally:
-        wb.close()
+        workbook.close()
 
 
 if __name__ == "__main__":

@@ -1,48 +1,236 @@
-"""Atualiza SECEX (Brasil) de BeefBR.xlsm pelo Comex Stat, via Drive."""
+"""Atualiza SECEX Brasil e o cambio diario do BeefBR.xlsm via Drive."""
 from __future__ import annotations
+
 import datetime as dt
-import sys,time
+import sys
+import time
 from copy import copy
 from pathlib import Path
-import openpyxl,requests
-sys.path.insert(0,str(Path(__file__).resolve().parent.parent));import drive_io
-XLSX_NAME='BeefBR.xlsm';SHEET_NAME='SECEX';URL='https://api-comexstat.mdic.gov.br/general';CODES=('0203','0201','0202','0207')
-def period(v):
- if isinstance(v,dt.datetime):v=v.date()
- return (v.year,v.month) if isinstance(v,dt.date) else None
-def api(code,start):
- payload={'flow':'export','monthDetail':True,'period':{'from':f'{start}-01','to':f'{dt.date.today().year}-12'},'filters':[{'filter':'heading','values':[code]}],'details':['heading'],'metrics':['metricFOB','metricKG']}
- for _ in range(4):
-  r=requests.post(URL,json=payload,headers={'Content-Type':'application/json'},timeout=90)
-  if r.status_code==429:time.sleep(25);continue
-  r.raise_for_status();return r.json().get('data',{}).get('list',[])
- return []
+
+import openpyxl
+import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
+
+XLSX_NAME = "BeefBR.xlsm"
+SHEET_NAME = "SECEX"
+COMEX_URL = "https://api-comexstat.mdic.gov.br/general"
+BCB_URL = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.1/dados"
+CODES = ("0203", "0201", "0202", "0207")
+
+
+def month_key(value):
+    if isinstance(value, dt.datetime):
+        value = value.date()
+    if isinstance(value, dt.date):
+        return value.year, value.month
+    return None
+
+
+def as_number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def comex(code, start_year):
+    payload = {
+        "flow": "export",
+        "monthDetail": True,
+        "period": {"from": f"{start_year}-01", "to": f"{dt.date.today().year}-12"},
+        "filters": [{"filter": "heading", "values": [code]}],
+        "details": ["heading"],
+        "metrics": ["metricFOB", "metricKG"],
+    }
+    for attempt in range(4):
+        response = requests.post(
+            COMEX_URL,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=90,
+        )
+        if response.status_code == 429 and attempt < 3:
+            time.sleep(25)
+            continue
+        response.raise_for_status()
+        return response.json().get("data", {}).get("list", [])
+    return []
+
+
+def bcb_fx(start_date, end_date):
+    response = requests.get(
+        BCB_URL,
+        params={
+            "formato": "json",
+            "dataInicial": start_date.strftime("%d/%m/%Y"),
+            "dataFinal": end_date.strftime("%d/%m/%Y"),
+        },
+        timeout=90,
+    )
+    response.raise_for_status()
+    rates = {}
+    for item in response.json():
+        try:
+            date = dt.datetime.strptime(item["data"], "%d/%m/%Y").date()
+            rates[date] = float(item["valor"].replace(".", "").replace(",", "."))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return rates
+
+
+def monthly_average(rates):
+    values = {}
+    for date, rate in rates.items():
+        values.setdefault((date.year, date.month), []).append(rate)
+    return {period: sum(items) / len(items) for period, items in values.items() if items}
+
+
+def copy_style(ws, source_row, target_row, columns):
+    for column in columns:
+        source = ws.cell(source_row, column)
+        target = ws.cell(target_row, column)
+        target._style = copy(source._style)
+        target.number_format = source.number_format
+        target.font = copy(source.font)
+        target.fill = copy(source.fill)
+        target.border = copy(source.border)
+        target.alignment = copy(source.alignment)
+
+
+def update_daily_fx(workbook, rates, today):
+    ws = workbook["BBG_Dados"]
+    changes = 0
+    for row in range(4, ws.max_row + 1):
+        value = ws.cell(row, 4).value
+        if isinstance(value, dt.datetime):
+            value = value.date()
+        if not isinstance(value, dt.date) or value > today:
+            continue
+        rate = rates.get(value)
+        if rate is None:
+            continue
+        cell = ws.cell(row, 7)
+        # Bloomberg continua sendo a fonte quando ja houver observacao;
+        # o BCB preenche apenas os dias que ainda nao chegaram pelo terminal.
+        if as_number(cell.value) is not None:
+            continue
+        cell.value = rate
+        if row > 4:
+            cell._style = copy(ws.cell(row - 1, 7)._style)
+        changes += 1
+    return changes
+
+
 def main():
- fid=drive_io.find_file_id(XLSX_NAME);path=drive_io.download_to_temp(fid);wb=openpyxl.load_workbook(path,keep_vba=True,data_only=False)
- try:
-  ws=wb[SHEET_NAME];rows={period(ws.cell(r,2).value):r for r in range(3,ws.max_row+1) if period(ws.cell(r,2).value)}
-  target=[p for p,r in rows.items() if p<=(dt.date.today().year,dt.date.today().month) and ws.cell(r,4).value in (None,'')]
-  if not target:print('Comex Stat: sem lacunas.');return
-  raw={c:{} for c in CODES}
-  for c in CODES:
-   for x in api(c,min(y for y,m in target)):raw[c][(int(x['year']),int(x['monthNumber']))]=(float(x.get('metricKG') or 0),float(x.get('metricFOB') or 0))
-   time.sleep(10)
-  changes=0
-  for p in target:
-   r=rows[p];a,b,d=raw['0203'].get(p,(0,0)),raw['0201'].get(p,(0,0)),raw['0202'].get(p,(0,0));f=raw['0207'].get(p,(0,0));beef=(b[0]+d[0],b[1]+d[1])
-   vals={4:a[0]/1e6 if a[0] else None,5:beef[0]/1e6 if beef[0] else None,6:f[0]/1e6 if f[0] else None,8:a[1]/a[0] if a[0] else None,10:beef[1]/beef[0] if beef[0] else None,12:f[1]/f[0] if f[0] else None}
-   for col,val in vals.items():
-    if val is None:continue
-    cell=ws.cell(r,col)
-    if cell.value not in (None,''):continue
-    cell.value=val
-    if r>3:cell._style=copy(ws.cell(r-1,col)._style)
-    changes+=1
-   for col,src in ((9,8),(11,10),(13,12)):
-    if ws.cell(r,col).value not in (None,''):continue
-    ws.cell(r,col).value=f'={openpyxl.utils.get_column_letter(src)}{r}*$O{r}'
-    changes+=1
-  if changes:wb.save(path);drive_io.update_file(fid,path)
-  print(f'Comex Stat BeefBR: {changes} celula(s) atualizada(s).')
- finally:wb.close()
-if __name__=='__main__':main()
+    today = dt.date.today()
+    probe = comex("0203", max(2000, today.year - 2))
+    if not probe:
+        raise RuntimeError("Comex Stat nao retornou meses para determinar a ultima publicacao.")
+    last_api = max((int(item["year"]), int(item["monthNumber"])) for item in probe)
+
+    file_id = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(file_id)
+    workbook = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
+    try:
+        ws = workbook[SHEET_NAME]
+        rows = {
+            month_key(ws.cell(row, 2).value): row
+            for row in range(3, ws.max_row + 1)
+            if month_key(ws.cell(row, 2).value)
+        }
+        eligible = sorted(period for period in rows if period <= last_api)
+        # O Comex pode revisar meses ja publicados. Reconciliar todo o historico
+        # publicado corrige volume e precos sem avancar para meses ainda indisponiveis.
+        targets = eligible
+
+        fx_missing = [
+            period for period, row in rows.items()
+            if period <= (today.year, today.month) and ws.cell(row, 15).value in (None, "")
+        ]
+        fx_period = min(fx_missing) if fx_missing else (today.year, today.month)
+        fx_start = dt.date(fx_period[0], fx_period[1], 1)
+        rates = bcb_fx(fx_start, today)
+        averages = monthly_average(rates)
+        fx_changes = update_daily_fx(workbook, rates, today)
+
+        raw = {code: {} for code in CODES}
+        if targets:
+            start_year = min(year for year, _ in targets)
+            for code in CODES:
+                for item in comex(code, start_year):
+                    period = int(item["year"]), int(item["monthNumber"])
+                    raw[code][period] = (
+                        float(item.get("metricKG") or 0),
+                        float(item.get("metricFOB") or 0),
+                    )
+                time.sleep(10)
+
+        changes = 0
+        for period in targets:
+            row = rows[period]
+            pork = raw["0203"].get(period, (0, 0))
+            fresh = raw["0201"].get(period, (0, 0))
+            frozen = raw["0202"].get(period, (0, 0))
+            poultry = raw["0207"].get(period, (0, 0))
+            beef = fresh[0] + frozen[0], fresh[1] + frozen[1]
+            if not any((pork[0], beef[0], poultry[0])):
+                continue
+
+            reference = max(
+                (candidate for candidate in range(3, row) if as_number(ws.cell(candidate, 4).value) is not None),
+                default=None,
+            )
+            if reference:
+                copy_style(ws, reference, row, range(4, 16))
+
+            values = {
+                4: pork[0] / 1e6 if pork[0] else None,
+                5: beef[0] / 1e6 if beef[0] else None,
+                6: poultry[0] / 1e6 if poultry[0] else None,
+                8: pork[1] / pork[0] if pork[0] else None,
+                10: beef[1] / beef[0] if beef[0] else None,
+                12: poultry[1] / poultry[0] if poultry[0] else None,
+            }
+            fx = averages.get(period)
+            if fx is not None:
+                values[15] = fx
+                values[9] = values[8] * fx if values[8] is not None else None
+                values[11] = values[10] * fx if values[10] is not None else None
+                values[13] = values[12] * fx if values[12] is not None else None
+            for column, value in values.items():
+                if value is None:
+                    continue
+                ws.cell(row, column).value = value
+                changes += 1
+
+        # O cambio mensal deve existir ate hoje, mesmo quando o SECEX ainda nao publicou o mes.
+        for period, row in rows.items():
+            if period > (today.year, today.month):
+                continue
+            fx = averages.get(period)
+            if fx is None:
+                continue
+            cell = ws.cell(row, 15)
+            if cell.value in (None, ""):
+                cell.value = fx
+                if row > 3:
+                    cell._style = copy(ws.cell(row - 1, 15)._style)
+                changes += 1
+
+        if changes or fx_changes:
+            workbook.calculation.fullCalcOnLoad = True
+            workbook.calculation.forceFullCalc = True
+            workbook.save(path)
+            drive_io.update_file(file_id, path)
+        print(
+            f"SECEX BeefBR: ultimo mes Comex {last_api[1]:02d}/{last_api[0]}; "
+            f"{changes} celula(s) SECEX/cambio e {fx_changes} dia(s) de FX atualizados."
+        )
+    finally:
+        workbook.close()
+
+
+if __name__ == "__main__":
+    main()
