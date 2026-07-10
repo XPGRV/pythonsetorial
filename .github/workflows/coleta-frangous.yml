@@ -1,0 +1,34 @@
+name: Coleta FrangoUS (piloto)
+
+# Piloto da migracao: roda o coletor production_frangous na nuvem, que le/grava
+# o FrangoUS.xlsm no Google Drive via service account. Por enquanto SO manual
+# (workflow_dispatch) — sem agendamento ate validarmos e coordenarmos com a
+# etapa Bloomberg.
+#
+# Secrets necessarios (Settings -> Secrets and variables -> Actions):
+#   GOOGLE_SERVICE_ACCOUNT_EMAIL
+#   GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
+#   NASS_API_KEY
+
+on:
+  workflow_dispatch:
+
+jobs:
+  coleta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+
+      - name: Coletor production_frangous
+        env:
+          GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+          GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+          NASS_API_KEY: ${{ secrets.NASS_API_KEY }}
+        run: python FrangoUS/atualiza_production_frangous.py
