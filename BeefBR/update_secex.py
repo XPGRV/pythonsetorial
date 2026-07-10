@@ -1,4 +1,4 @@
-﻿"""Atualiza SECEX (Brasil) de BeefBR.xlsm pelo Comex Stat, via Drive."""
+"""Atualiza SECEX (Brasil) de BeefBR.xlsm pelo Comex Stat, via Drive."""
 from __future__ import annotations
 import datetime as dt
 import sys,time
@@ -33,10 +33,15 @@ def main():
    vals={4:a[0]/1e6 if a[0] else None,5:beef[0]/1e6 if beef[0] else None,6:f[0]/1e6 if f[0] else None,8:a[1]/a[0] if a[0] else None,10:beef[1]/beef[0] if beef[0] else None,12:f[1]/f[0] if f[0] else None}
    for col,val in vals.items():
     if val is None:continue
-    cell=ws.cell(r,col);cell.value=val
+    cell=ws.cell(r,col)
+    if cell.value not in (None,''):continue
+    cell.value=val
     if r>3:cell._style=copy(ws.cell(r-1,col)._style)
     changes+=1
-   for col,src in ((9,8),(11,10),(13,12)):ws.cell(r,col).value=f'={openpyxl.utils.get_column_letter(src)}{r}*$O{r}';changes+=1
+   for col,src in ((9,8),(11,10),(13,12)):
+    if ws.cell(r,col).value not in (None,''):continue
+    ws.cell(r,col).value=f'={openpyxl.utils.get_column_letter(src)}{r}*$O{r}'
+    changes+=1
   if changes:wb.save(path);drive_io.update_file(fid,path)
   print(f'Comex Stat BeefBR: {changes} celula(s) atualizada(s).')
  finally:wb.close()

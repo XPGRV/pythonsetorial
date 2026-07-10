@@ -1,4 +1,4 @@
-﻿"""Consolidador BeefBR cloud: estende formulas sem Excel."""
+"""Consolidador BeefBR cloud: estende formulas sem Excel."""
 from __future__ import annotations
 import datetime as dt,re,sys
 from copy import copy
@@ -17,10 +17,14 @@ def last_formula(ws,col,start=5):
  return None
 def extend(ws,src,end,ranges):
  if not src or end<=src:return 0
+ changes=0
  for r in range(src+1,end+1):
   for a,b in ranges:
-   for c in range(a,b+1):copy_cell(ws.cell(src,c),ws.cell(r,c),r-src)
- return end-src
+   for c in range(a,b+1):
+    # O consolidador so completa novas lacunas; nunca substitui dados existentes.
+    if ws.cell(r,c).value not in (None,''):continue
+    copy_cell(ws.cell(src,c),ws.cell(r,c),r-src);changes+=1
+ return changes
 def row_of(y,m):return 5+(y-2000)*12+m-1
 def main():
  fid=drive_io.find_file_id(XLSX_NAME);path=drive_io.download_to_temp(fid);wb=openpyxl.load_workbook(path,keep_vba=True,data_only=False);changes=0
