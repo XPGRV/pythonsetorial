@@ -25,7 +25,11 @@ ABATES_FIRST_DATA_ROW = 3
 ROW_OFFSET_ABATES_TO_MAIN = MAIN_FIRST_DATA_ROW - ABATES_FIRST_DATA_ROW
 
 ABATES_MAIN_COL_START = 4
+ABATES_MAIN_COL_END = 10
 COL_DATE_MAIN = 2
+COL_DATE_ABATES = 2
+ABATES_SOURCE_COL_START = 3
+ABATES_SOURCE_COL_END = 14
 COL_M = 13
 COL_N = 14
 COL_O = 15
@@ -123,6 +127,43 @@ def last_usable_price_formula_row(ws, col: int, start: int) -> int:
     return start - 1
 
 
+def year_month(value) -> tuple[int, int] | None:
+    if isinstance(value, dt.datetime):
+        value = value.date()
+    if isinstance(value, dt.date):
+        return value.year, value.month
+
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"\s*(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)[-/](\d{2,4})\s*", value.casefold())
+    if not match:
+        return None
+    month_names = ("jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez")
+    year = int(match.group(2))
+    return (2000 + year if year < 100 else year), month_names.index(match.group(1)) + 1
+
+
+def rows_by_year_month(ws, date_col: int, start: int) -> dict[tuple[int, int], list[int]]:
+    rows: dict[tuple[int, int], list[int]] = {}
+    for row in range(start, ws.max_row + 1):
+        period = year_month(ws.cell(row=row, column=date_col).value)
+        if period:
+            rows.setdefault(period, []).append(row)
+    return rows
+
+
+def nearest_formula_row(ws, col: int, target_row: int, start: int) -> int | None:
+    for row in range(target_row - 1, start - 1, -1):
+        value = ws.cell(row=row, column=col).value
+        if isinstance(value, str) and value.startswith("="):
+            return row
+    for row in range(target_row + 1, ws.max_row + 1):
+        value = ws.cell(row=row, column=col).value
+        if isinstance(value, str) and value.startswith("="):
+            return row
+    return None
+
+
 def row_for_year_month(ws, year: int, month: int) -> int | None:
     for row in range(MAIN_FIRST_DATA_ROW, ws.max_row + 1):
         value = ws.cell(row=row, column=COL_DATE_MAIN).value
@@ -134,20 +175,63 @@ def row_for_year_month(ws, year: int, month: int) -> int | None:
 
 
 def sincronizar_abates(ws_main, ws_abates) -> dict:
-    last_abates = last_value_row(ws_abates, col=3, start=ABATES_FIRST_DATA_ROW)
-    if last_abates < ABATES_FIRST_DATA_ROW:
-        return {"mudou": False, "msg": "Abates: nenhuma linha com dado em col C."}
+    """Preenche somente D:J vazias, associando cada linha pelo mes correspondente."""
+    main_rows = rows_by_year_month(ws_main, COL_DATE_MAIN, MAIN_FIRST_DATA_ROW)
+    completed_rows: set[int] = set()
+    cells_filled = 0
+    unmatched_periods = 0
 
-    target_main = last_abates + ROW_OFFSET_ABATES_TO_MAIN
-    template_main = last_formula_row(ws_main, col=ABATES_MAIN_COL_START, start=MAIN_FIRST_DATA_ROW)
-    if template_main < MAIN_FIRST_DATA_ROW:
-        return {"mudou": False, "msg": "BeefUS: nenhuma linha-template com formula em D."}
-    if target_main <= template_main:
-        return {"mudou": False, "msg": f"Abates: ja alinhado (ultima linha BeefUS={template_main})."}
+    for abates_row in range(ABATES_FIRST_DATA_ROW, ws_abates.max_row + 1):
+        has_source_data = any(
+            ws_abates.cell(row=abates_row, column=col).value not in (None, "")
+            for col in range(ABATES_SOURCE_COL_START, ABATES_SOURCE_COL_END + 1)
+        )
+        if not has_source_data:
+            continue
 
-    n = extend_section(ws_main, template_main, [(1, COL_M - 1), (COL_N, COL_P)], target_main)
-    return {"mudou": True, "msg": f"Abates: +{n} linha(s) em BeefUS (ate {target_main})."}
+        period = year_month(ws_abates.cell(row=abates_row, column=COL_DATE_ABATES).value)
+        if not period:
+            continue
+        candidates = main_rows.get(period, [])
+        target_row = next(
+            (
+                row
+                for row in candidates
+                if any(
+                    ws_main.cell(row=row, column=col).value in (None, "")
+                    for col in range(ABATES_MAIN_COL_START, ABATES_MAIN_COL_END + 1)
+                )
+            ),
+            None,
+        )
+        if target_row is None:
+            if not candidates:
+                unmatched_periods += 1
+            continue
 
+        for col in range(ABATES_MAIN_COL_START, ABATES_MAIN_COL_END + 1):
+            target = ws_main.cell(row=target_row, column=col)
+            if target.value not in (None, ""):
+                continue
+            template_row = nearest_formula_row(ws_main, col, target_row, MAIN_FIRST_DATA_ROW)
+            if template_row is None:
+                continue
+            copy_cell(
+                ws_main.cell(row=template_row, column=col),
+                target,
+                shift_delta=target_row - template_row,
+            )
+            cells_filled += 1
+            completed_rows.add(target_row)
+
+    if not cells_filled:
+        return {"mudou": False, "msg": "Abates: nenhuma celula vazia para preencher."}
+
+    warning = f"; {unmatched_periods} mes(es) sem data correspondente" if unmatched_periods else ""
+    return {
+        "mudou": True,
+        "msg": f"Abates: {cells_filled} formula(s) reposta(s) em {len(completed_rows)} mes(es){warning}.",
+    }
 
 def ajustar_precos(ws_main, today: dt.date) -> dict:
     row_cur = row_for_year_month(ws_main, today.year, today.month)
