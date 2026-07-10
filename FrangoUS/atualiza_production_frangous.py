@@ -28,15 +28,16 @@ import copy
 import openpyxl
 import requests
 
+# Acesso as planilhas via Google Drive (modulo drive_io na raiz do repo).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
+
 sys.stdout.reconfigure(encoding="utf-8")
 warnings.filterwarnings("ignore")
 
 
 # ── Configuração ──────────────────────────────────────────────────────────────
 
-DRIVE_ROOT = Path(
-    r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z"
-)
 XLSX_NAME = "FrangoUS.xlsm"
 SHEET_NAME     = "Production"
 FIRST_DATA_ROW = 3       # linha 3 = jan/2000
@@ -75,25 +76,6 @@ MONTH_MAP = {
 
 
 # ── 1. Download NASS ──────────────────────────────────────────────────────────
-
-def localizar_planilha() -> Path:
-    """Localiza a planilha sem depender dos nomes das pastas intermediárias."""
-    encontrados = list(DRIVE_ROOT.rglob(XLSX_NAME))
-
-    if not encontrados:
-        raise FileNotFoundError(
-            f"Planilha {XLSX_NAME!r} não encontrada dentro de {DRIVE_ROOT}"
-        )
-
-    if len(encontrados) > 1:
-        caminhos = "\n".join(f"  - {path}" for path in encontrados)
-        raise RuntimeError(
-            f"Foram encontradas várias planilhas chamadas {XLSX_NAME!r}:\n"
-            f"{caminhos}"
-        )
-
-    return encontrados[0]
-
 
 def fetch_nass() -> list[dict]:
     """Chama a API NASS e retorna a lista de registros JSON."""
@@ -182,7 +164,9 @@ def _approx_equal(a: float, b: float, tol: float = 1e-9) -> bool:
 
 
 def update_production(nass_data: dict[tuple[int, int], float]) -> dict:
-    path = localizar_planilha()
+    # Baixa a planilha do Google Drive (em vez de ler do drive montado em G:\).
+    fid = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(fid)
 
     wb = openpyxl.load_workbook(str(path), keep_vba=True, data_only=False)
     try:
@@ -252,6 +236,7 @@ def update_production(nass_data: dict[tuple[int, int], float]) -> dict:
         total = novos + revisoes + fmt_fix
         if total > 0:
             wb.save(str(path))
+            drive_io.update_file(fid, path)   # sobe de volta pro Drive (in-place)
             msg_parts = []
             if novos:    msg_parts.append(f"{novos} nova(s)")
             if revisoes: msg_parts.append(f"{revisoes} revisão/revisões")
@@ -267,6 +252,10 @@ def update_production(nass_data: dict[tuple[int, int], float]) -> dict:
         return {"alteracoes": total, "novos": novos, "revisoes": revisoes, "fmt_fix": fmt_fix}
     finally:
         wb.close()
+        try:
+            os.remove(path)   # limpa o arquivo temporario baixado do Drive
+        except OSError:
+            pass
 
 
 # ── 4. Main ───────────────────────────────────────────────────────────────────
