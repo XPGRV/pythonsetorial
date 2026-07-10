@@ -33,7 +33,9 @@ def shift_formula(formula, delta):
 def fetch_data():
     # O servidor do MAPA (CKAN) e instavel; o retry automatico (net.py, via
     # drive_io) repete a chamada em caso de timeout/erro transitorio.
-    response = requests.get(SIF_URL, timeout=180)
+    # timeout=(connect, read): conecta rapido ou desiste em 15s (e ai o retry
+    # tenta de novo, em vez de travar 3min); leitura do CSV pode levar ate 120s.
+    response = requests.get(SIF_URL, timeout=(15, 120))
     response.raise_for_status()
     frame = None
     for encoding in ("utf-8", "latin-1", "cp1252"):
