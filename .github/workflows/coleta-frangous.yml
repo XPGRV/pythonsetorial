@@ -72,6 +72,11 @@ jobs:
           python FrangoUS/atualiza_usda_frangous.py | tee /tmp/o.txt
           echo "- **usda frangous (col Q/R/S):** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: forecast ERS LDP (aba Forecast)
+        run: |
+          python FrangoUS/coletar_usda_ers_ldp_forecasts.py | tee /tmp/o.txt
+          echo "- **forecast ERS LDP (aba Forecast):** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
+
       - name: wholesale broiler composite (coluna T)
         run: |
           python FrangoUS/atualiza_wholesale_broiler_composite.py | tee /tmp/o.txt

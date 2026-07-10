@@ -1408,6 +1408,7 @@ def main() -> None:
     out_dir = cwd / "data_usda_ers"
     downloads_dir = out_dir / "_downloads"
     out_dir.mkdir(parents=True, exist_ok=True)
+    downloads_dir.mkdir(parents=True, exist_ok=True)
 
     beef_prod_rows:    list[pd.DataFrame] = []
     broiler_prod_rows: list[pd.DataFrame] = []
