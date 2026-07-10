@@ -1,0 +1,59 @@
+﻿name: Coleta BeefUS
+
+# Roda os coletores do BeefUS na nuvem, em sequencia (nunca em paralelo).
+# Todos gravam no mesmo BeefUS.xlsm no Drive via service account.
+# O consolidador roda por ultimo e estende formulas; o cache dessas formulas
+# e restaurado depois pelo PC Bloomberg ao abrir/recalcular/salvar.
+#
+# Secrets: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
+#          NASS_API_KEY
+
+on:
+  schedule:
+    # Dias uteis 23h UTC = 20h BRT, antes do Bloomberg das 22h.
+    - cron: '0 23 * * 1-5'
+  workflow_dispatch:
+
+concurrency:
+  group: coleta-beefus
+  cancel-in-progress: false
+
+jobs:
+  coleta:
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+      NASS_API_KEY: ${{ secrets.NASS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+
+      - name: Resumo (cabecalho)
+        run: echo "## Coleta BeefUS - $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: abates USDA (aba Abates)
+        run: |
+          python BeefUS/atualiza_abates_usda.py | tee /tmp/o.txt
+          echo "- **abates USDA:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: preco bezerro USDA NASS (coluna N)
+        run: |
+          python BeefUS/atualiza_px_bezerro_usa.py | tee /tmp/o.txt
+          echo "- **preco bezerro:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: forecasts ERS LDP (aba Production)
+        run: |
+          python BeefUS/coletar_usda_ers_ldp_forecasts.py | tee /tmp/o.txt
+          echo "- **forecast ERS:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: consolidador BeefUS (extend formulas)
+        run: |
+          python BeefUS/atualizar_beefus.py | tee /tmp/o.txt
+          echo "- **consolidador:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"

@@ -1,5 +1,7 @@
-# Dependencias dos coletores que rodam na nuvem (GitHub Actions).
+﻿# Dependencias dos coletores que rodam na nuvem (GitHub Actions).
 google-api-python-client
 google-auth
 openpyxl
 requests
+pandas
+beautifulsoup4

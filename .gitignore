@@ -1,7 +1,12 @@
 # Segredos — nunca versionar
 .env
+.env.*
 *.env
 **/.env
+**/.env.*
+service-account.json
+*service*account*.json
+*.iam.gserviceaccount.com.json
 
 # Config local de ferramentas
 .claude/

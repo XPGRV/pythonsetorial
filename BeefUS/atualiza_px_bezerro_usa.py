@@ -25,9 +25,6 @@ if _env_file.exists():
 API_KEY      = os.environ.get("NASS_API_KEY")
 if not API_KEY:
     raise SystemExit("Defina NASS_API_KEY (variavel de ambiente ou .env).")
-DRIVE_ROOT   = Path(
-    r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z"
-)
 XLSX_NAME    = "BeefUS.xlsm"
 ABA          = "BeefUS"
 COLUNA_DATA  = 2   # coluna B
@@ -40,25 +37,6 @@ MESES_EN = {
     "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8,
     "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
 }
-
-
-def localizar_planilha() -> Path:
-    """Localiza a planilha sem depender dos nomes das pastas intermediárias."""
-    encontrados = list(DRIVE_ROOT.rglob(XLSX_NAME))
-
-    if not encontrados:
-        raise FileNotFoundError(
-            f"Planilha {XLSX_NAME!r} não encontrada dentro de {DRIVE_ROOT}"
-        )
-
-    if len(encontrados) > 1:
-        caminhos = "\n".join(f"  - {path}" for path in encontrados)
-        raise RuntimeError(
-            f"Foram encontradas várias planilhas chamadas {XLSX_NAME!r}:\n"
-            f"{caminhos}"
-        )
-
-    return encontrados[0]
 
 
 def buscar_precos_usda(api_key: str) -> dict[tuple[int, int], float]:
@@ -104,8 +82,13 @@ def buscar_precos_usda(api_key: str) -> dict[tuple[int, int], float]:
 
 
 def atualizar_planilha(precos: dict[tuple[int, int], float]) -> None:
-    path = localizar_planilha()
-    print(f"\nAbrindo planilha: {path}")
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import drive_io
+
+    fid = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(fid)
+    print(f"\nAbrindo planilha do Drive: {XLSX_NAME}")
     wb = openpyxl.load_workbook(path, keep_vba=True)
     ws = wb[ABA]
 
@@ -149,7 +132,8 @@ def atualizar_planilha(precos: dict[tuple[int, int], float]) -> None:
     print(f"  {atualizados} células atualizadas, {sem_preco} datas sem dado na API")
     print("Salvando...")
     wb.save(path)
-    print("Concluído.")
+    drive_io.update_file(fid, path)
+    print("Concluido. Arquivo salvo no Drive.")
 
 
 if __name__ == "__main__":

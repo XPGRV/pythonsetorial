@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin
@@ -70,32 +71,7 @@ _KNOWN_PUBIDS: dict[tuple[int, int], int] = {
     (2026,  4): 114064,  # April 2026
 }
 
-# Caminhos dos arquivos a serem atualizados
-DRIVE_ROOT = Path(
-    r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z"
-)
-
-
-def localizar_planilha(nome: str) -> Path:
-    """Localiza uma planilha sem depender dos nomes das pastas intermediárias."""
-    encontrados = list(DRIVE_ROOT.rglob(nome))
-
-    if not encontrados:
-        raise FileNotFoundError(
-            f"Planilha {nome!r} não encontrada dentro de {DRIVE_ROOT}"
-        )
-
-    if len(encontrados) > 1:
-        caminhos = "\n".join(f"  - {path}" for path in encontrados)
-        raise RuntimeError(
-            f"Foram encontradas várias planilhas chamadas {nome!r}:\n{caminhos}"
-        )
-
-    return encontrados[0]
-
-
-BEEFUS_PATH = localizar_planilha("BeefUS.xlsm")
-FRANGOUS_PATH = localizar_planilha("FrangoUS.xlsm")
+XLSX_NAME = "BeefUS.xlsm"
 
 # Nome exibido do download (varia pouco ao longo do tempo)
 DOWNLOAD_LABEL_RED_MEAT = "U.S. red meat and poultry forecasts"
@@ -1163,6 +1139,7 @@ def run(
 
     downloads_dir = out_dir / "_downloads"
     out_dir.mkdir(parents=True, exist_ok=True)
+    downloads_dir.mkdir(parents=True, exist_ok=True)
 
     all_rows: list[pd.DataFrame] = []
     beef_prod_rows: list[pd.DataFrame] = []
@@ -1348,22 +1325,24 @@ def find_empty_tokens(beefus_path: Path, sheet_name: str = "Production") -> list
 
 
 def main() -> None:
-    # Verifica colunas vazias em ambos os arquivos e combina tokens únicos
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import drive_io
+
+    print("Baixando BeefUS.xlsm do Drive...")
+    fid = drive_io.find_file_id(XLSX_NAME)
+    beefus_path = Path(drive_io.download_to_temp(fid))
+
     print("Verificando colunas vazias em BeefUS (Production)...")
-    missing_beef = find_empty_tokens(BEEFUS_PATH, sheet_name="Production")
+    missing_beef = find_empty_tokens(beefus_path, sheet_name="Production")
+    missing_broiler = []
 
-    print("Verificando colunas vazias em FrangoUS (Forecast)...")
-    missing_broiler = find_empty_tokens(FRANGOUS_PATH, sheet_name="Forecast")
-
-    missing = sorted(set(missing_beef) | set(missing_broiler))
+    missing = sorted(set(missing_beef))
     if not missing:
-        print("Nenhuma coluna vazia encontrada. Planilhas já atualizadas.")
+        print("Nenhuma coluna vazia encontrada. BeefUS ja atualizado.")
         return
 
     if missing_beef:
         print(f"BeefUS colunas vazias:   {', '.join(missing_beef)}")
-    if missing_broiler:
-        print(f"FrangoUS colunas vazias: {', '.join(missing_broiler)}")
 
     today = dt.date.today()
     print("Buscando lista de releases ERS...")
@@ -1493,8 +1472,10 @@ def main() -> None:
         )
         print(f"OK: {label} atualizado -> {target_path}")
 
-    _build_and_update(beef_prod_rows,    BEEFUS_PATH,   "Production", "BeefUS")
-    _build_and_update(broiler_prod_rows, FRANGOUS_PATH, "Forecast",   "FrangoUS")
+    _build_and_update(beef_prod_rows, beefus_path, "Production", "BeefUS")
+    if beef_prod_rows:
+        drive_io.update_file(fid, str(beefus_path))
+        print("OK: BeefUS.xlsm salvo no Drive.")
 
 
 if __name__ == "__main__":
