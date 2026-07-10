@@ -1,10 +1,11 @@
 """
-atualizar_frangoUS.py
+atualizar_frangoUS.py  (versao openpyxl / nuvem)
 
-FrangoUS — atualiza formulas em duas abas:
+Consolidador do FrangoUS — "puxa" as formulas-template para baixo, ate as
+linhas novas, em duas abas:
 
 Aba BBG_Dados:
-  Colunas I, J, L, O, Q, R, V, X, AA — ultima linha com dado em col E.
+  Colunas I, J, L, O, Q, R, V, X, AA — ate a ultima linha com dado em col E.
 
 Aba FrangoUS:
   (i)   Mes corrente:  D->F, I->P, W, AP, AQ  — ate o mes corrente
@@ -18,49 +19,50 @@ Mapeamento de linhas:
   FrangoUS:   linha 5 = jan/2000  ->  row = 5 + (ano-2000)*12 + (mes-1)
   Production: linha 3 = jan/2000  ->  FrangoUS_row = Production_row + 2
 
-Requer: pip install pywin32
+As formulas estendidas NAO sao BDH — sao aritmeticas referenciando outras
+colunas, todas relativas (sem $). "Puxar pra baixo" = incrementar o numero de
+linha de cada referencia (o mesmo que o Excel faz num arrasta/cola). As celulas
+novas ficam com formula sem valor em cache ate o Excel (PC Bloomberg) recalcular.
+
+Le/grava o FrangoUS.xlsm via Google Drive (drive_io). Roda na nuvem, sem Excel.
+Requer: pip install openpyxl google-api-python-client google-auth
 """
 
+import re
 import sys
 import datetime
+from copy import copy
 from pathlib import Path
 
-DRIVE_ROOT = Path(
-    r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z"
-)
+import openpyxl
+from openpyxl.utils import get_column_letter
+
 XLSX_NAME = "FrangoUS.xlsm"
 
-XL_UP          = -4162
-XL_PASTE_ALL   = -4104
-XL_CALC_MANUAL = -4135
-XL_CALC_AUTO   = -4105
+
+# ── Deslocamento de formula ("puxar pra baixo") ───────────────────────────────
+# Incrementa o numero de linha de cada referencia relativa. Referencias com $
+# na linha (absolutas) nao mudam. Validado celula a celula contra o Excel real.
+_REF = re.compile(r"(?<![A-Za-z0-9_])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![A-Za-z_(])")
 
 
-def localizar_planilha() -> Path:
-    """Localiza a planilha sem depender dos nomes das pastas intermediárias."""
-    encontrados = list(DRIVE_ROOT.rglob(XLSX_NAME))
+def shift_formula(formula, delta: int):
+    if not isinstance(formula, str) or not formula.startswith("="):
+        return formula
 
-    if not encontrados:
-        raise FileNotFoundError(
-            f"Planilha {XLSX_NAME!r} nao encontrada dentro de {DRIVE_ROOT}"
-        )
+    def repl(m):
+        col_abs, col, row_abs, row = m.groups()
+        if row_abs == "$":
+            return m.group(0)
+        return f"{col_abs}{col}{row_abs}{int(row) + delta}"
 
-    if len(encontrados) > 1:
-        caminhos = "\n".join(f"  - {path}" for path in encontrados)
-        raise RuntimeError(
-            f"Foram encontradas varias planilhas chamadas {XLSX_NAME!r}:\n"
-            f"{caminhos}"
-        )
+    return _REF.sub(repl, formula)
 
-    return encontrados[0]
 
+# ── Helpers de linha ──────────────────────────────────────────────────────────
 
 def col_letter(n: int) -> str:
-    result = ""
-    while n > 0:
-        n, rem = divmod(n - 1, 26)
-        result = chr(65 + rem) + result
-    return result
+    return get_column_letter(n)
 
 
 def frangoUS_row(year: int, month: int) -> int:
@@ -83,85 +85,95 @@ def format_ym(year: int, month: int) -> str:
 
 
 def last_formula_row(ws, col: int, start: int = 5) -> int:
-    """Ultima linha em 'col' com formula, buscando de baixo para cima."""
-    last = ws.Cells(ws.Rows.Count, col).End(XL_UP).Row
-    if last < start:
-        return start - 1
-    for r in range(last, start - 1, -1):
-        if ws.Cells(r, col).HasFormula:
+    """Ultima linha em 'col' com formula, de baixo para cima."""
+    for r in range(ws.max_row, start - 1, -1):
+        v = ws.cell(row=r, column=col).value
+        if isinstance(v, str) and v.startswith("="):
             return r
     return start - 1
 
 
 def last_data_row(ws, col: int, start: int = 3) -> int:
-    """Ultima linha em 'col' com valor numerico > 0, varrendo de baixo para cima."""
-    bottom = ws.Cells(ws.Rows.Count, col).End(XL_UP).Row
-    for r in range(bottom, start - 1, -1):
-        v = ws.Cells(r, col).Value
-        if isinstance(v, (int, float)) and v > 0:
+    """Ultima linha em 'col' com valor numerico > 0, de baixo para cima."""
+    for r in range(ws.max_row, start - 1, -1):
+        v = ws.cell(row=r, column=col).value
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
             return r
     return 0
 
 
-def extend_section(ws, src_row: int, col_ranges: list, dst_end: int, excel) -> int:
+def last_nonempty_row(ws, col: int, start: int = 2) -> int:
+    """Ultima linha em 'col' com qualquer conteudo, de baixo para cima."""
+    for r in range(ws.max_row, start - 1, -1):
+        if ws.cell(row=r, column=col).value not in (None, ""):
+            return r
+    return start - 1
+
+
+def extend_section(ws, src_row: int, col_ranges: list, dst_end: int) -> int:
+    """Copia a linha-template 'src_row' (formula deslocada + formato) para baixo
+    ate 'dst_end', nas colunas dadas. Equivale ao Copy + PasteSpecial(All) do Excel."""
     if dst_end <= src_row:
         return 0
-    dst_start = src_row + 1
     for c_start, c_end in col_ranges:
-        rng_src = f"{col_letter(c_start)}{src_row}:{col_letter(c_end)}{src_row}"
-        rng_dst = f"{col_letter(c_start)}{dst_start}:{col_letter(c_end)}{dst_end}"
-        ws.Range(rng_src).Copy()
-        ws.Range(rng_dst).PasteSpecial(Paste=XL_PASTE_ALL)
-        excel.CutCopyMode = False
+        for col in range(c_start, c_end + 1):
+            src = ws.cell(row=src_row, column=col)
+            src_val = src.value
+            is_formula = isinstance(src_val, str) and src_val.startswith("=")
+            for dst_row in range(src_row + 1, dst_end + 1):
+                dst = ws.cell(row=dst_row, column=col)
+                dst.value = shift_formula(src_val, dst_row - src_row) if is_formula else src_val
+                dst.number_format = src.number_format
+                dst.font = copy(src.font)
+                dst.fill = copy(src.fill)
+                dst.border = copy(src.border)
+                dst.alignment = copy(src.alignment)
     return dst_end - src_row
 
 
 # ── BBG_Dados ─────────────────────────────────────────────────────────────────
 
-def atualizar_bbg_dados(ws_bbg, excel) -> None:
+def atualizar_bbg_dados(ws_bbg) -> int:
     """Cols I, J, L, O, Q, R, V, X, AA — ultima linha com dado em col E."""
-    last_data = ws_bbg.Cells(ws_bbg.Rows.Count, 5).End(XL_UP).Row
+    last_data = last_nonempty_row(ws_bbg, col=5, start=2)
     last_tmpl = last_formula_row(ws_bbg, col=9, start=2)  # col I
 
     if last_tmpl < 2:
         print("  BBG_Dados: nenhuma linha template em col I — pulando.")
-        return
+        return 0
 
     if last_data > last_tmpl:
         n = extend_section(
             ws_bbg, last_tmpl,
             [(9, 10), (12, 12), (15, 15), (17, 18), (22, 22), (24, 24), (27, 27)],
-            # I,J | L | O | Q,R | V | X | AA
-            last_data, excel
+            last_data,
         )
         print(f"  BBG_Dados: +{n} linha(s) -> linha {last_data}")
-    else:
-        print(f"  BBG_Dados: ja atualizado (linha {last_tmpl})")
+        return n
+    print(f"  BBG_Dados: ja atualizado (linha {last_tmpl})")
+    return 0
 
 
 # ── FrangoUS ──────────────────────────────────────────────────────────────────
 
-def atualizar_mes_corrente(ws_us, today: datetime.date, excel) -> None:
+def atualizar_mes_corrente(ws_us, today: datetime.date) -> int:
     """(i) Cols D->F, I->P, W, AP, AQ — ate o mes corrente."""
     target = frangoUS_row(today.year, today.month)
     last   = last_formula_row(ws_us, col=4)  # col D
 
     if last < 5:
         print("  (i)  Mes corrente: nenhuma linha template em col D — pulando.")
-        return
+        return 0
 
     if target > last:
-        n = extend_section(
-            ws_us, last,
-            [(4, 6), (9, 16), (23, 23), (42, 43)],  # D->F | I->P | W | AP,AQ
-            target, excel
-        )
+        n = extend_section(ws_us, last, [(4, 6), (9, 16), (23, 23), (42, 43)], target)
         print(f"  (i)  Mes corrente: +{n} mes(es) -> {format_ym(today.year, today.month)}")
-    else:
-        print(f"  (i)  Mes corrente: ja atualizado (linha {last})")
+        return n
+    print(f"  (i)  Mes corrente: ja atualizado (linha {last})")
+    return 0
 
 
-def atualizar_mes_anterior(ws_us, today: datetime.date, excel) -> None:
+def atualizar_mes_anterior(ws_us, today: datetime.date) -> int:
     """(ii) Cols AE->AH, AK->AN, AR — sempre o mes anterior ao corrente."""
     yr, mo = prev_month(today.year, today.month)
     target = frangoUS_row(yr, mo)
@@ -169,27 +181,24 @@ def atualizar_mes_anterior(ws_us, today: datetime.date, excel) -> None:
 
     if last < 5:
         print("  (ii) Mes anterior: nenhuma linha template em col AE — pulando.")
-        return
+        return 0
 
     if target > last:
-        n = extend_section(
-            ws_us, last,
-            [(31, 34), (37, 40), (44, 44)],  # AE->AH | AK->AN | AR
-            target, excel
-        )
+        n = extend_section(ws_us, last, [(31, 34), (37, 40), (44, 44)], target)
         print(f"  (ii) Mes anterior: +{n} mes(es) -> {format_ym(yr, mo)}")
-    else:
-        print(f"  (ii) Mes anterior: ja atualizado (linha {last})")
+        return n
+    print(f"  (ii) Mes anterior: ja atualizado (linha {last})")
+    return 0
 
 
 def atualizar_prod_col(ws_us, ws_prod, prod_col: int, frango_col_ranges: list,
-                       label: str, excel) -> None:
+                       label: str) -> int:
     """Generico: estende colunas de ws_us ate o ultimo dado em ws_prod[prod_col]."""
     last_prod = last_data_row(ws_prod, col=prod_col)
 
     if last_prod == 0:
         print(f"  {label}: sem dados em Production col {col_letter(prod_col)} — pulando.")
-        return
+        return 0
 
     target    = last_prod + 2  # Production linha 3 = FrangoUS linha 5
     ref_col   = frango_col_ranges[0][0]
@@ -197,88 +206,53 @@ def atualizar_prod_col(ws_us, ws_prod, prod_col: int, frango_col_ranges: list,
 
     if last_tmpl < 5:
         print(f"  {label}: nenhuma linha template em col {col_letter(ref_col)} — pulando.")
-        return
+        return 0
 
     if target > last_tmpl:
         yr, mo = production_row_to_ym(last_prod)
-        n = extend_section(ws_us, last_tmpl, frango_col_ranges, target, excel)
+        n = extend_section(ws_us, last_tmpl, frango_col_ranges, target)
         print(f"  {label}: +{n} mes(es) -> {format_ym(yr, mo)}")
-    else:
-        print(f"  {label}: ja atualizado (linha {last_tmpl})")
+        return n
+    print(f"  {label}: ja atualizado (linha {last_tmpl})")
+    return 0
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    try:
-        import win32com.client
-    except ImportError:
-        print("ERRO: pip install pywin32")
-        sys.exit(1)
-
-    try:
-        path = localizar_planilha()
-    except (FileNotFoundError, RuntimeError) as exc:
-        print(f"ERRO: {exc}")
-        sys.exit(1)
+    # Baixa a planilha do Google Drive (em vez do drive montado em G:\).
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import drive_io
+    fid  = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(fid)
 
     today = datetime.date.today()
     print(f"FrangoUS — {today:%d/%m/%Y}\n")
 
-    excel = win32com.client.DispatchEx("Excel.Application")
-    try: excel.Visible        = False
-    except Exception: pass
-    try: excel.DisplayAlerts  = False
-    except Exception: pass
-    try: excel.ScreenUpdating = False
-    except Exception: pass
-
+    wb = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
     try:
-        wb      = excel.Workbooks.Open(str(path))
-        excel.Calculation = XL_CALC_MANUAL
-        ws_bbg  = wb.Sheets("BBG_Dados")
-        ws_us   = wb.Sheets("FrangoUS")
-        ws_prod = wb.Sheets("Production")
+        ws_bbg  = wb["BBG_Dados"]
+        ws_us   = wb["FrangoUS"]
+        ws_prod = wb["Production"]
 
-        atualizar_bbg_dados(ws_bbg, excel)
-        atualizar_mes_corrente(ws_us, today, excel)
-        atualizar_mes_anterior(ws_us, today, excel)
+        total = 0
+        total += atualizar_bbg_dados(ws_bbg)
+        total += atualizar_mes_corrente(ws_us, today)
+        total += atualizar_mes_anterior(ws_us, today)
+        total += atualizar_prod_col(ws_us, ws_prod, 3, [(26, 26)], "(iii) Prod C -> Z")
+        total += atualizar_prod_col(ws_us, ws_prod, 4, [(27, 30)], "(iv)  Prod D -> AA->AD")
+        total += atualizar_prod_col(ws_us, ws_prod, 7, [(35, 36)], "(v)   Prod G -> AI,AJ")
+        total += atualizar_prod_col(ws_us, ws_prod, 8, [(41, 41)], "(vi)  Prod H -> AO")
 
-        # Prod col C -> Z (26)
-        atualizar_prod_col(ws_us, ws_prod, prod_col=3,
-                           frango_col_ranges=[(26, 26)],
-                           label="(iii) Prod C -> Z", excel=excel)
-
-        # Prod col D -> AA->AD (27->30)
-        atualizar_prod_col(ws_us, ws_prod, prod_col=4,
-                           frango_col_ranges=[(27, 30)],
-                           label="(iv)  Prod D -> AA->AD", excel=excel)
-
-        # Prod col G -> AI, AJ (35->36)
-        atualizar_prod_col(ws_us, ws_prod, prod_col=7,
-                           frango_col_ranges=[(35, 36)],
-                           label="(v)   Prod G -> AI,AJ", excel=excel)
-
-        # Prod col H -> AO (41)
-        atualizar_prod_col(ws_us, ws_prod, prod_col=8,
-                           frango_col_ranges=[(41, 41)],
-                           label="(vi)  Prod H -> AO", excel=excel)
-
-        excel.Calculation = XL_CALC_AUTO
-        wb.Save()
-        wb.Close(SaveChanges=False)
-        print(f"\nSalvo: {path.name}")
-
-    except Exception:
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        if total > 0:
+            wb.save(path)
+            drive_io.update_file(fid, path)   # sobe de volta pro Drive (in-place)
+            print(f"\nSalvo: {total} linha(s) estendida(s). "
+                  f"(As formulas ganham valor quando o Excel/Bloomberg recalcular.)")
+        else:
+            print("\nNada a estender — ja atualizado.")
     finally:
-        try:
-            excel.ScreenUpdating = True
-            excel.Quit()
-        except Exception:
-            pass
+        wb.close()
 
 
 if __name__ == "__main__":
