@@ -655,5 +655,35 @@ def main():
             pass
 
 
+def main_cloud_beefbr():
+    """Modo GitHub Actions: atualiza somente a aba BeefBR via Drive/openpyxl."""
+    import openpyxl
+    from copy import copy
+    from pathlib import Path
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import drive_io
+    content = download_setores_produtos()
+    prices, year, month = parse_prices(content)
+    fid = drive_io.find_file_id(BEEFBR_NAME)
+    path = drive_io.download_to_temp(fid)
+    wb = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
+    try:
+        ws = wb["BeefBR"]
+        row = sheet_row(year, month)
+        ws.cell(row, 5).value = prices["bovi"] / 1000
+        ws.cell(row, 5)._style = copy(ws.cell(row - 1, 5)._style)
+        ws.cell(row, 10).value = f"=E{row}*AN{row}"
+        ws.cell(row, 10)._style = copy(ws.cell(row - 1, 10)._style)
+        wb.save(path)
+        drive_io.update_file(fid, path)
+        print(f"Preco bovina BeefBR: {month:02d}/{year} atualizado.")
+    finally:
+        wb.close()
+
+
 if __name__ == "__main__":
-    main()
+    if "--cloud-beefbr" in sys.argv:
+        main_cloud_beefbr()
+    else:
+        main()

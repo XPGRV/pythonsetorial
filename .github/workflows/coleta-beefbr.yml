@@ -1,0 +1,38 @@
+name: Coleta BeefBR
+
+on:
+  schedule:
+    - cron: '0 23 * * 1-5'
+  workflow_dispatch:
+
+concurrency:
+  group: coleta-beefbr
+  cancel-in-progress: false
+
+jobs:
+  coleta:
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+      - name: Resumo
+        run: echo "## Coleta BeefBR - $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
+      - name: Abates SIF
+        run: python BeefBR/atualiza_abates.py | tee /tmp/o.txt
+      - name: Abates SIDRA
+        run: python BeefBR/atualiza_abates_sidra.py | tee /tmp/o.txt
+      - name: SECEX Comex Stat
+        run: python BeefBR/update_secex.py | tee /tmp/o.txt
+      - name: SECEX USDA GATS
+        run: python BeefBR/atualizar_secex.py | tee /tmp/o.txt
+      - name: Preco de exportacao bovina
+        run: python BeefBR/atualiza_px_bovina_balanca.py --cloud-beefbr | tee /tmp/o.txt
+      - name: Consolidador BeefBR
+        run: python BeefBR/atualizar_beefbr.py | tee /tmp/o.txt
