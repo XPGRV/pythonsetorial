@@ -1,0 +1,36 @@
+name: Diag conectividade
+
+# Testa, de dentro do runner do GitHub, quais fontes de dados respondem.
+# Serve pra saber quais hosts .gov.br bloqueiam o IP da nuvem.
+# Rode manualmente (Run workflow) e veja o Resumo.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Testa conectividade dos hosts
+        run: |
+          echo "## Conectividade a partir do runner GitHub" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Host | Fonte | Resultado |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          check() {
+            host="$1"; label="$2"
+            if curl -sS -o /dev/null -r 0-0 --connect-timeout 15 --max-time 25 "$host"; then
+              res="OK ✅"
+            else
+              res="BLOQUEADO ❌"
+            fi
+            echo "$label -> $host : $res"
+            echo "| $host | $label | $res |" >> "$GITHUB_STEP_SUMMARY"
+          }
+          check "https://dados.agricultura.gov.br"       "MAPA / SIF (abates)"
+          check "https://apisidra.ibge.gov.br"           "IBGE SIDRA"
+          check "https://api-comexstat.mdic.gov.br"      "Comex Stat (SECEX)"
+          check "https://api.bcb.gov.br"                 "Banco Central"
+          check "https://balanca.economia.gov.br"        "MDIC Balanca"
+          check "https://servicodados.ibge.gov.br"       "IBGE servicodados"
+          check "https://apps.fas.usda.gov"              "USDA GATS (EUA)"
+          check "https://quickstats.nass.usda.gov"       "USDA NASS (EUA)"
