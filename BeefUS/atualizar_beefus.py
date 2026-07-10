@@ -48,9 +48,27 @@ def shift_formula(formula, delta: int):
     return _REF.sub(repl, formula)
 
 
-def copy_cell(src, dst, *, shift_delta: int = 0) -> None:
+def is_usable_price_formula(value) -> bool:
+    """Aceita formulas reais e ignora o placeholder =\"Sem Dados\"."""
+    if not isinstance(value, str) or not value.lstrip().startswith("="):
+        return False
+    body = value.lstrip()[1:].strip()
+    return body.casefold() not in {'"sem dados"', "'sem dados'"}
+
+
+def show_sem_dados_on_error(formula):
+    """Mantem a formula original, mas troca erros de calculo pelo texto de fallback."""
+    if not is_usable_price_formula(formula):
+        return formula
+    if formula.lstrip()[1:].upper().startswith("IFERROR("):
+        return formula
+    return f'=IFERROR({formula.lstrip()[1:]},"Sem Dados")'
+
+
+def copy_cell(src, dst, *, shift_delta: int = 0, protect_price_formula: bool = False) -> None:
     src_value = src.value
-    dst.value = shift_formula(src_value, shift_delta) if isinstance(src_value, str) and src_value.startswith("=") else src_value
+    value = shift_formula(src_value, shift_delta) if isinstance(src_value, str) and src_value.startswith("=") else src_value
+    dst.value = show_sem_dados_on_error(value) if protect_price_formula else value
     dst.number_format = src.number_format
     dst.font = copy(src.font)
     dst.fill = copy(src.fill)
@@ -59,14 +77,26 @@ def copy_cell(src, dst, *, shift_delta: int = 0) -> None:
     dst.protection = copy(src.protection)
 
 
-def extend_section(ws, src_row: int, col_ranges: list[tuple[int, int]], dst_end: int) -> int:
+def extend_section(
+    ws,
+    src_row: int,
+    col_ranges: list[tuple[int, int]],
+    dst_end: int,
+    *,
+    protect_price_formula: bool = False,
+) -> int:
     if dst_end <= src_row:
         return 0
     for c0, c1 in col_ranges:
         for col in range(c0, c1 + 1):
             src = ws.cell(row=src_row, column=col)
             for dst_row in range(src_row + 1, dst_end + 1):
-                copy_cell(src, ws.cell(row=dst_row, column=col), shift_delta=dst_row - src_row)
+                copy_cell(
+                    src,
+                    ws.cell(row=dst_row, column=col),
+                    shift_delta=dst_row - src_row,
+                    protect_price_formula=protect_price_formula,
+                )
     return dst_end - src_row
 
 
@@ -82,6 +112,13 @@ def last_formula_row(ws, col: int, start: int) -> int:
     for row in range(ws.max_row, start - 1, -1):
         value = ws.cell(row=row, column=col).value
         if isinstance(value, str) and value.startswith("="):
+            return row
+    return start - 1
+
+
+def last_usable_price_formula_row(ws, col: int, start: int) -> int:
+    for row in range(ws.max_row, start - 1, -1):
+        if is_usable_price_formula(ws.cell(row=row, column=col).value):
             return row
     return start - 1
 
@@ -108,7 +145,7 @@ def sincronizar_abates(ws_main, ws_abates) -> dict:
     if target_main <= template_main:
         return {"mudou": False, "msg": f"Abates: ja alinhado (ultima linha BeefUS={template_main})."}
 
-    n = extend_section(ws_main, template_main, [(1, COL_P)], target_main)
+    n = extend_section(ws_main, template_main, [(1, COL_M - 1), (COL_N, COL_P)], target_main)
     return {"mudou": True, "msg": f"Abates: +{n} linha(s) em BeefUS (ate {target_main})."}
 
 
@@ -126,11 +163,25 @@ def ajustar_precos(ws_main, today: dt.date) -> dict:
     acoes: list[str] = []
 
     for col, label in [(COL_M, "M"), (COL_Q, "Q")]:
-        last_row = last_formula_row(ws_main, col=col, start=MAIN_FIRST_DATA_ROW)
+        last_row = last_usable_price_formula_row(ws_main, col=col, start=MAIN_FIRST_DATA_ROW)
         if last_row >= MAIN_FIRST_DATA_ROW and last_row < row_cur:
-            extend_section(ws_main, last_row, [(col, col)], row_cur)
+            extend_section(
+                ws_main,
+                last_row,
+                [(col, col)],
+                row_cur,
+                protect_price_formula=True,
+            )
             mudou = True
             acoes.append(f"{label}: formula copiada linhas {last_row + 1}->{row_cur} ({row_cur - last_row} mes(es))")
+
+        cell = ws_main.cell(row=row_cur, column=col)
+        if is_usable_price_formula(cell.value):
+            protected = show_sem_dados_on_error(cell.value)
+            if protected != cell.value:
+                cell.value = protected
+                mudou = True
+                acoes.append(f"{label}: formula protegida contra erros na linha {row_cur}")
 
     n_val = ws_main.cell(row=row_cur, column=COL_N).value
     if n_val not in (None, ""):
