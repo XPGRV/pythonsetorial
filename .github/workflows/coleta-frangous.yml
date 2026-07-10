@@ -10,7 +10,10 @@ name: Coleta FrangoUS
 
 on:
   schedule:
-    - cron: '0 8 * * 1-5'   # dias uteis, 08h UTC = 05h BRT (antes do Bloomberg/dashboard)
+    # Dias uteis 23h UTC = 20h BRT — ANTES do Bloomberg das 22h (que recalcula
+    # via F9 as formulas que o openpyxl deixa sem cache) e da dashboard das 8h.
+    # Ordem: nuvem 20h -> Bloomberg 22h -> dashboard 8h (dia seguinte).
+    - cron: '0 23 * * 1-5'
   workflow_dispatch:
 
 # Nunca deixa duas execucoes escreverem no FrangoUS.xlsm ao mesmo tempo.
