@@ -1,7 +1,13 @@
 import re
-import xlwings as xw
+import sys
+from copy import copy
 from datetime import datetime
 from pathlib import Path
+
+import openpyxl
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
 
 # Caminhos dos arquivos
 DRIVE_ROOT = Path(
@@ -52,51 +58,54 @@ def corrigir_formula(formula):
         
     return formula
 
+
+def copy_sheet(src_ws, dst_ws):
+    """Copia a aba inteira (valores/formulas + formato) da fonte p/ o destino,
+    corrigindo as formulas. Equivale ao Cells.Clear + UsedRange.Copy do Excel."""
+    # Desfaz merges do destino (senao nao da pra limpar/escrever nas celulas).
+    for rng in list(dst_ws.merged_cells.ranges):
+        dst_ws.unmerge_cells(str(rng))
+    # Limpa valores do destino.
+    for row in dst_ws.iter_rows():
+        for cell in row:
+            cell.value = None
+    # Copia cada celula da fonte (valor corrigido + formato).
+    for row in src_ws.iter_rows():
+        for cell in row:
+            dst = dst_ws.cell(row=cell.row, column=cell.column)
+            dst.value = corrigir_formula(cell.value)
+            dst.font = copy(cell.font)
+            dst.fill = copy(cell.fill)
+            dst.border = copy(cell.border)
+            dst.alignment = copy(cell.alignment)
+            dst.number_format = cell.number_format
+    # Larguras de coluna e merges.
+    for col, dim in src_ws.column_dimensions.items():
+        if dim.width:
+            dst_ws.column_dimensions[col].width = dim.width
+    for rng in list(src_ws.merged_cells.ranges):
+        dst_ws.merge_cells(str(rng))
+
+
 def main():
-    log("Iniciando atualização da aba SECEX...")
-    beef_path = localizar_planilha(BEEF_NAME)
-    frango_path = localizar_planilha(FRANGO_NAME)
-    app = xw.App(visible=False, add_book=False)
+    log("Iniciando copia da aba SECEX (BeefBR -> FrangoBR) via Drive...")
+    beef_fid = drive_io.find_file_id(BEEF_NAME)
+    frango_fid = drive_io.find_file_id(FRANGO_NAME)
+    beef_path = drive_io.download_to_temp(beef_fid)
+    frango_path = drive_io.download_to_temp(frango_fid)
+
+    wb_beef = openpyxl.load_workbook(beef_path, data_only=False)
+    wb_frango = openpyxl.load_workbook(frango_path, keep_vba=True, data_only=False)
     try:
-        app.api.AskToUpdateLinks = False
-        app.display_alerts       = False
-        
-        # Abre as planilhas
-        wb_beef   = app.books.open(str(beef_path), update_links=0, read_only=True)
-        wb_frango = app.books.open(str(frango_path), update_links=0, read_only=False)
-
-        sh_beef   = wb_beef.sheets[SHEET_NAME]
-        sh_frango = wb_frango.sheets[SHEET_NAME]
-
-        # 1. Atualizar conteúdo sem deletar a aba (Preserva links de outras abas)
-        log(f"Limpando e sobrescrevendo dados na aba '{SHEET_NAME}'...")
-        sh_frango.api.Cells.Clear() 
-        sh_beef.api.UsedRange.Copy(Destination=sh_frango.api.Range("A1"))
-        
-        # 2. Corrigir fórmulas internas da nova SECEX
-        log("Corrigindo fórmulas e removendo vínculos externos...")
-        used = sh_frango.used_range
-        formulas = used.formula
-        
-        if formulas:
-            # Processa a matriz de fórmulas para ser mais rápido
-            novas_formulas = []
-            for row in formulas:
-                nova_row = [corrigir_formula(cell) for cell in row]
-                novas_formulas.append(nova_row)
-            
-            used.formula = novas_formulas
-
-        log("Salvando alterações no FrangoBR...")
-        wb_frango.save()
+        log(f"Copiando aba '{SHEET_NAME}' e corrigindo formulas...")
+        copy_sheet(wb_beef[SHEET_NAME], wb_frango[SHEET_NAME])
+        wb_frango.save(frango_path)
+        drive_io.update_file(frango_fid, frango_path)
+        log("FrangoBR salvo no Drive. Concluido.")
+    finally:
         wb_frango.close()
         wb_beef.close()
-        log("Processo concluído com sucesso!")
 
-    except Exception as e:
-        log(f"ERRO: {e}")
-    finally:
-        app.quit()
 
 if __name__ == "__main__":
     main()
