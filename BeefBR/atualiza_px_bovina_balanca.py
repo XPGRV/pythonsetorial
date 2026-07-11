@@ -702,6 +702,18 @@ def main_cloud_beefbr():
             target.alignment = copy(source.alignment)
             target.number_format = source.number_format
 
+    # Cores da fonte (ARGB), iguais a versao Excel:
+    #   verde  = dado mensal do SECEX
+    #   azul   = dado semanal da Balanca (hardcoded na ponta)
+    #   laranja= J linkado na coluna F (=F)
+    from openpyxl.styles import Font
+    GREEN_A, BLUE_A, ORANGE_A = "FF00B050", "FF0070C0", "FFED7D31"
+
+    def set_color(cell, argb):
+        f = cell.font
+        cell.font = Font(name=f.name, size=f.size, bold=f.bold, italic=f.italic,
+                         underline=f.underline, color=argb)
+
     content = download_setores_produtos()
     prices, balance_year, balance_month = parse_prices(content)
     file_id = drive_io.find_file_id(BEEFBR_NAME)
@@ -758,6 +770,8 @@ def main_cloud_beefbr():
             beef.cell(beef_row, 5).value = f"=SECEX!{price_letter}{secex_row}"
             beef.cell(beef_row, 10).value = f"=SECEX!{brl_letter}{secex_row}"
             beef.cell(beef_row, 6).value = f"=E{beef_row}*AN{beef_row}"
+            set_color(beef.cell(beef_row, 5), GREEN_A)   # E verde (dado SECEX)
+            set_color(beef.cell(beef_row, 10), GREEN_A)  # J verde (dado SECEX)
             # AN (cambio) fica por conta do consolidador (formula AVERAGEIFS).
             changes += 1
 
@@ -771,10 +785,15 @@ def main_cloud_beefbr():
         )
         if beef_row is not None and not secex_available:
             copy_style(beef, max(5, beef_row - 1), beef_row, (5, 6, 10, 40))
-            # Sem SECEX no mes: E e valor hardcoded (Balanca); F fica como formula
-            # (=E*AN). J so recebe formula quando o SECEX publicar o mes.
+            # Sem SECEX no mes: dado semanal da Balanca.
+            #   E = valor hardcoded (azul)
+            #   F = E * cambio (formula)
+            #   J = F (formula, laranja)
             beef.cell(beef_row, 5).value = prices["bovi"] / 1000
             beef.cell(beef_row, 6).value = f"=E{beef_row}*AN{beef_row}"
+            beef.cell(beef_row, 10).value = f"=F{beef_row}"
+            set_color(beef.cell(beef_row, 5), BLUE_A)     # E azul (semanal/Balanca)
+            set_color(beef.cell(beef_row, 10), ORANGE_A)  # J laranja (=F)
             changes += 1
 
         if changes:
