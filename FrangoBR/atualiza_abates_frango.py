@@ -11,13 +11,30 @@ Colunas SIF escritas na planilha:
 """
 
 import io
+import re
+import sys
 import time
 import datetime as dt
+from copy import copy
 from pathlib import Path
 
 import requests
 import pandas as pd
-import xlwings as xw
+import openpyxl
+from openpyxl.utils import column_index_from_string
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
+
+
+_REF = re.compile(r"(?<![A-Za-z0-9_])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![A-Za-z_(])")
+def shift_formula(formula, delta):
+    if not isinstance(formula, str) or not formula.startswith("="):
+        return formula
+    def repl(m):
+        cabs, col, rabs, row = m.groups()
+        return m.group(0) if rabs == "$" else f"{cabs}{col}{rabs}{int(row)+delta}"
+    return _REF.sub(repl, formula)
 
 
 # ============================================================
@@ -180,7 +197,8 @@ def agregar_sif(df: pd.DataFrame) -> dict:
 # MAIN
 # ============================================================
 def main():
-    path = localizar_planilha()
+    fid = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(fid)
 
     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] Iniciando atualização SIF Frango...")
 
@@ -193,27 +211,19 @@ def main():
         print("Nenhum dado encontrado. Encerrando.")
         return
 
-    print(f"\n[2/3] Abrindo {path.name} via xlwings...")
-    app = xw.App(visible=False, add_book=False)
+    print("\n[2/3] Abrindo FrangoBR.xlsm via openpyxl...")
+    wb = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
     try:
-        app.api.AskToUpdateLinks = False
-        app.display_alerts       = False
-        app.screen_updating      = False
-
-        wb = app.books.open(str(path), update_links=0, read_only=False)
-        try:
-            print("\n[3/3] Gravando dados na planilha...")
-            resultado = processar(wb, dados)
-            if resultado["salvar"]:
-                wb.api.SaveLinkValues = True
-                wb.save()
-                print("Arquivo salvo.")
-            else:
-                print("Nada alterado — arquivo NÃO salvo.")
-        finally:
-            wb.close()
+        print("\n[3/3] Gravando dados na planilha...")
+        resultado = processar(wb, dados)
+        if resultado["salvar"]:
+            wb.save(path)
+            drive_io.update_file(fid, path)   # sobe de volta pro Drive (in-place)
+            print("Arquivo salvo.")
+        else:
+            print("Nada alterado — arquivo NAO salvo.")
     finally:
-        app.quit()
+        wb.close()
 
     print_relatorio(resultado)
 
@@ -222,14 +232,18 @@ def main():
 # PROCESSAMENTO
 # ============================================================
 def processar(wb, dados: dict) -> dict:
-    sh = wb.sheets[SHEET_NAME]
+    ws = wb[SHEET_NAME]
+    cB = column_index_from_string(COL_DATAS)
+    cF = column_index_from_string(COL_FRANGO)
+    cG = column_index_from_string(COL_GALINHA_GAL)
+    cH = column_index_from_string(COL_TOTAL)
 
-    last_row    = sh.used_range.last_cell.row
-    datas_col   = sh.range(f"{COL_DATAS}{ROW_BASE}:{COL_DATAS}{last_row}").value
+    last_row  = ws.max_row
+    datas_col = [ws.cell(r, cB).value for r in range(ROW_BASE, last_row + 1)]
 
-    # Lê estado atual das colunas V e W de uma vez
-    sif_vals  = sh.range(f"{COL_FRANGO}{ROW_BASE}:{COL_GALINHA_GAL}{last_row}").value
-    sif_lista = sif_vals if isinstance(sif_vals, list) else []
+    # Estado atual de F:G (cada linha = [frango, galinha_galo])
+    sif_lista = [[ws.cell(r, cF).value, ws.cell(r, cG).value]
+                 for r in range(ROW_BASE, last_row + 1)]
 
     def diagnostico(matriz):
         primeiro = ultimo = None
@@ -253,7 +267,8 @@ def processar(wb, dados: dict) -> dict:
     print(f"  SIF (V:W): primeiro={p_sif}, último={u_sif}, gap={gap_sif}")
 
     # Linha template = última linha com dados em colunas de referência SIDRA (ex: C:G)
-    heads_vals   = sh.range(f"C{ROW_BASE}:G{last_row}").value
+    heads_vals = [[ws.cell(r, c).value for c in range(3, 8)]
+                  for r in range(ROW_BASE, last_row + 1)]
     _, u_h, _    = diagnostico(heads_vals)
     template_row = (ROW_BASE + u_h) if u_h is not None else None
     print(f"  Linha template: {template_row}")
@@ -324,9 +339,11 @@ def processar(wb, dados: dict) -> dict:
         blocos.append(bloco_atual)
 
         for bloco in blocos:
-            matriz   = [escrita_pendente[l] for l in bloco]
             ini, fim = bloco[0], bloco[-1]
-            sh.range(f"{COL_FRANGO}{ini}:{COL_GALINHA_GAL}{fim}").value = matriz
+            for l in bloco:
+                f_val, g_val = escrita_pendente[l]
+                ws.cell(l, cF).value = f_val
+                ws.cell(l, cG).value = g_val
             print(f"  Escritas linhas {ini}:{fim} ({len(bloco)} meses)")
 
     # Propagar formato (V:W) e fórmula (X) para linhas novas
@@ -343,16 +360,20 @@ def processar(wb, dados: dict) -> dict:
                 ini = fim = l
         blocos_fmt.append((ini, fim))
 
+        h_tmpl = ws.cell(template_row, cH).value   # formula Total (=IFERROR(G+F,...))
         for ini, fim in blocos_fmt:
-            # Formato de V:W
-            sh.range(f"{COL_FRANGO}{template_row}:{COL_GALINHA_GAL}{template_row}").api.Copy()
-            sh.range(f"{COL_FRANGO}{ini}:{COL_GALINHA_GAL}{fim}").api.PasteSpecial(Paste=-4122)  # xlPasteFormats
-
-            # Fórmula de X (Total = V+W)
-            sh.range(f"{COL_TOTAL}{template_row}").api.Copy()
-            sh.range(f"{COL_TOTAL}{ini}:{COL_TOTAL}{fim}").api.PasteSpecial(Paste=-4123)  # xlPasteFormulas
-
-        sh.book.app.api.CutCopyMode = False
+            for l in range(ini, fim + 1):
+                # Formato de F, G e H copiado do template
+                for c in (cF, cG, cH):
+                    src = ws.cell(template_row, c)
+                    dst = ws.cell(l, c)
+                    dst.number_format = src.number_format
+                    dst.font = copy(src.font)
+                    dst.fill = copy(src.fill)
+                    dst.border = copy(src.border)
+                    dst.alignment = copy(src.alignment)
+                # Formula H (Total = G+F), com linhas deslocadas
+                ws.cell(l, cH).value = shift_formula(h_tmpl, l - template_row)
 
     return {
         "salvar":       sum(contadores.values()) > 0,
