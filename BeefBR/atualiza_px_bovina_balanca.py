@@ -739,21 +739,26 @@ def main_cloud_beefbr():
             if rates
         }
 
+        from openpyxl.utils import get_column_letter
+        price_letter = get_column_letter(price_col)  # SECEX col referenciada por E (ex: J)
+        brl_letter = get_column_letter(brl_col)      # SECEX col referenciada por J (ex: K)
+
         changes = 0
         # O SECEX sempre tem prioridade quando o dado mensal existe.
         for period, secex_row in secex_rows.items():
             beef_row = beef_rows.get(period)
+            # So precisamos saber se o SECEX tem o mes: a col USD (price_col) e valor.
+            # A col BRL (brl_col) agora e formula (sem valor em cache), nao serve p/ checar.
             usd = number(secex.cell(secex_row, price_col).value)
-            brl = number(secex.cell(secex_row, brl_col).value)
-            if beef_row is None or usd is None or brl is None:
+            if beef_row is None or usd is None:
                 continue
             copy_style(beef, max(5, beef_row - 1), beef_row, (5, 6, 10, 40))
-            beef.cell(beef_row, 5).value = usd
-            beef.cell(beef_row, 6).value = brl
-            beef.cell(beef_row, 10).value = brl
-            fx = monthly_fx.get(period)
-            if fx is not None:
-                beef.cell(beef_row, 40).value = fx
+            # E/J/F sao FORMULAS (igual as linhas antigas), nao valores hardcoded.
+            # E puxa o USD do SECEX; J puxa o BRL/Kg do SECEX; F = E * cambio (AN).
+            beef.cell(beef_row, 5).value = f"=SECEX!{price_letter}{secex_row}"
+            beef.cell(beef_row, 10).value = f"=SECEX!{brl_letter}{secex_row}"
+            beef.cell(beef_row, 6).value = f"=E{beef_row}*AN{beef_row}"
+            # AN (cambio) fica por conta do consolidador (formula AVERAGEIFS).
             changes += 1
 
         # A Balanca preenche somente o mes mais recente ainda sem SECEX.
@@ -766,14 +771,10 @@ def main_cloud_beefbr():
         )
         if beef_row is not None and not secex_available:
             copy_style(beef, max(5, beef_row - 1), beef_row, (5, 6, 10, 40))
-            usd = prices["bovi"] / 1000
-            fx = monthly_fx.get(period)
-            beef.cell(beef_row, 5).value = usd
-            if fx is not None:
-                brl = usd * fx
-                beef.cell(beef_row, 6).value = brl
-                beef.cell(beef_row, 10).value = brl
-                beef.cell(beef_row, 40).value = fx
+            # Sem SECEX no mes: E e valor hardcoded (Balanca); F fica como formula
+            # (=E*AN). J so recebe formula quando o SECEX publicar o mes.
+            beef.cell(beef_row, 5).value = prices["bovi"] / 1000
+            beef.cell(beef_row, 6).value = f"=E{beef_row}*AN{beef_row}"
             changes += 1
 
         if changes:
