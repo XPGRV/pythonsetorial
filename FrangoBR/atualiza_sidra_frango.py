@@ -8,12 +8,18 @@ Escreve nas colunas:
 Via xlwings (preserva links externos, formatação e demais abas intactas).
 """
 
+import sys
 import time
 import datetime as dt
+from copy import copy
 from pathlib import Path
 
 import requests
-import xlwings as xw
+import openpyxl
+from openpyxl.utils import column_index_from_string
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
 
 
 # ============================================================
@@ -146,29 +152,21 @@ def _diff(a, b) -> bool:
 # MAIN
 # ============================================================
 def main():
-    path = localizar_planilha()
+    fid = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(fid)
 
-    print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] Abrindo {path.name} via xlwings...")
-
-    app = xw.App(visible=False, add_book=False)
+    print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] Abrindo FrangoBR.xlsm via openpyxl...")
+    wb = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
     try:
-        app.api.AskToUpdateLinks = False
-        app.display_alerts       = False
-        app.screen_updating      = False
-
-        wb = app.books.open(str(path), update_links=0, read_only=False)
-        try:
-            resultado = processar(wb)
-            if resultado["salvar"]:
-                wb.api.SaveLinkValues = True
-                wb.save()
-                print("Arquivo salvo.")
-            else:
-                print("Nada alterado — arquivo NAO salvo.")
-        finally:
-            wb.close()
+        resultado = processar(wb)
+        if resultado["salvar"]:
+            wb.save(path)
+            drive_io.update_file(fid, path)   # sobe de volta pro Drive
+            print("Arquivo salvo.")
+        else:
+            print("Nada alterado — arquivo NAO salvo.")
     finally:
-        app.quit()
+        wb.close()
 
     print_relatorio(resultado)
 
@@ -177,20 +175,15 @@ def main():
 # PROCESSAMENTO
 # ============================================================
 def processar(wb) -> dict:
-    sh = wb.sheets[SHEET_NAME]
+    ws = wb[SHEET_NAME]
+    cB = column_index_from_string(COL_DATAS)
+    cC = column_index_from_string(COL_HEADS)
+    cD = column_index_from_string(COL_PESO)
 
-    last_row   = sh.used_range.last_cell.row
-    heads_vals = sh.range(f"{COL_HEADS}{ROW_BASE}:{COL_HEADS}{last_row}").value
-    peso_vals  = sh.range(f"{COL_PESO}{ROW_BASE}:{COL_PESO}{last_row}").value
-    datas_col  = sh.range(f"{COL_DATAS}{ROW_BASE}:{COL_DATAS}{last_row}").value
-
-    # normaliza para listas simples (xlwings retorna lista ou escalar)
-    if not isinstance(heads_vals, list):
-        heads_vals = [heads_vals]
-    if not isinstance(peso_vals, list):
-        peso_vals  = [peso_vals]
-    if not isinstance(datas_col, list):
-        datas_col  = [datas_col]
+    last_row   = ws.max_row
+    heads_vals = [ws.cell(r, cC).value for r in range(ROW_BASE, last_row + 1)]
+    peso_vals  = [ws.cell(r, cD).value for r in range(ROW_BASE, last_row + 1)]
+    datas_col  = [ws.cell(r, cB).value for r in range(ROW_BASE, last_row + 1)]
 
     def diagnostico(lista):
         primeiro = ultimo = None
@@ -342,9 +335,11 @@ def processar(wb) -> dict:
         blocos.append(bloco_atual)
 
         for bloco in blocos:
-            matriz   = [escrita_pendente[ln] for ln in bloco]
             ini, fim = bloco[0], bloco[-1]
-            sh.range(f"{COL_HEADS}{ini}:{COL_PESO}{fim}").value = matriz
+            for ln in bloco:
+                h_val, p_val = escrita_pendente[ln]
+                ws.cell(ln, cC).value = h_val
+                ws.cell(ln, cD).value = p_val
             print(f"  Escritas linhas {ini}:{fim} ({len(bloco)} meses)")
 
     # propagar formato de C:D para linhas novas
@@ -361,10 +356,15 @@ def processar(wb) -> dict:
         blocos_fmt.append((ini, fim))
 
         for ini, fim in blocos_fmt:
-            sh.range(f"{COL_HEADS}{template_row}:{COL_PESO}{template_row}").api.Copy()
-            sh.range(f"{COL_HEADS}{ini}:{COL_PESO}{fim}").api.PasteSpecial(Paste=-4122)  # xlPasteFormats
-
-        sh.book.app.api.CutCopyMode = False
+            for ln in range(ini, fim + 1):
+                for c in (cC, cD):
+                    src = ws.cell(template_row, c)
+                    dst = ws.cell(ln, c)
+                    dst.number_format = src.number_format
+                    dst.font = copy(src.font)
+                    dst.fill = copy(src.fill)
+                    dst.border = copy(src.border)
+                    dst.alignment = copy(src.alignment)
 
     return {
         "salvar":        sum(contadores.values()) > 0,
