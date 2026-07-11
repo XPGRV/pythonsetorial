@@ -32,7 +32,12 @@ def localizar_planilha() -> Path:
     return encontrados[0]
 
 
-EXCEL_PATH = str(localizar_planilha())
+# Baixa a planilha do Google Drive (em vez do drive montado em G:\).
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
+_fid = drive_io.find_file_id(XLSX_NAME)
+EXCEL_PATH = drive_io.download_to_temp(_fid)
 
 # Colunas no Excel (1-based): C=3 D=4 E=5 F=6 G=7 H=8
 COLS = {
@@ -319,6 +324,7 @@ if ROW_END > old_last_row:
             dst.value = adjust_formula(src.value, offset)
 
 wb.save(EXCEL_PATH)
+drive_io.update_file(_fid, EXCEL_PATH)   # sobe de volta pro Drive (in-place)
 print("  Arquivo salvo.")
 
 print(f"  Concluído! {written} células escritas, {skipped} ausentes (gaps).")
