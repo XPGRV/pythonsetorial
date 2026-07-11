@@ -74,17 +74,21 @@ def bcb_fx(start_date, end_date):
     for item in response.json():
         try:
             date = dt.datetime.strptime(item["data"], "%d/%m/%Y").date()
-            rates[date] = float(item["valor"].replace(".", "").replace(",", "."))
+            # BCB (formato=json) usa ponto decimal, ex "5.1329". Nao mexer no ponto!
+            rates[date] = float(item["valor"])
         except (KeyError, TypeError, ValueError):
             continue
     return rates
 
 
-def monthly_average(rates):
-    values = {}
-    for date, rate in rates.items():
-        values.setdefault((date.year, date.month), []).append(rate)
-    return {period: sum(items) / len(items) for period, items in values.items() if items}
+def fx_formula(row):
+    """Formula AVERAGEIFS: media mensal do FX diario (BBG_Dados col G) do mes em
+    B{row}. Igual as linhas antigas da SECEX; o Excel/Bloomberg calcula o valor."""
+    return (
+        f'=AVERAGEIFS(BBG_Dados!G:G,BBG_Dados!D:D,'
+        f'">="&DATE(YEAR(SECEX!B{row}),MONTH(SECEX!B{row}),1),'
+        f'BBG_Dados!D:D,"<"&DATE(YEAR(SECEX!B{row}),MONTH(SECEX!B{row})+1,1))'
+    )
 
 
 def copy_style(ws, source_row, target_row, columns):
@@ -152,7 +156,6 @@ def main():
         fx_period = min(fx_missing) if fx_missing else (today.year, today.month)
         fx_start = dt.date(fx_period[0], fx_period[1], 1)
         rates = bcb_fx(fx_start, today)
-        averages = monthly_average(rates)
         fx_changes = update_daily_fx(workbook, rates, today)
 
         raw = {code: {} for code in CODES}
@@ -193,12 +196,16 @@ def main():
                 10: beef[1] / beef[0] if beef[0] else None,
                 12: poultry[1] / poultry[0] if poultry[0] else None,
             }
-            fx = averages.get(period)
-            if fx is not None:
-                values[15] = fx
-                values[9] = values[8] * fx if values[8] is not None else None
-                values[11] = values[10] * fx if values[10] is not None else None
-                values[13] = values[12] * fx if values[12] is not None else None
+            # O (FX) e a media mensal do FX diario -> FORMULA AVERAGEIFS (igual as
+            # linhas antigas). I/K/M (BRL/Kg) = USD/kg * FX -> tambem formulas.
+            # (Nao hardcodar: o Excel/Bloomberg calcula ao recalcular.)
+            values[15] = fx_formula(row)
+            if values[8] is not None:
+                values[9] = f"=H{row}*$O{row}"
+            if values[10] is not None:
+                values[11] = f"=J{row}*$O{row}"
+            if values[12] is not None:
+                values[13] = f"=L{row}*$O{row}"
             for column, value in values.items():
                 if value is None:
                     continue
@@ -209,12 +216,10 @@ def main():
         for period, row in rows.items():
             if period > (today.year, today.month):
                 continue
-            fx = averages.get(period)
-            if fx is None:
-                continue
             cell = ws.cell(row, 15)
-            if cell.value in (None, ""):
-                cell.value = fx
+            # Vazio OU valor hardcoded (bug antigo do x10000) -> poe a formula.
+            if not (isinstance(cell.value, str) and cell.value.startswith("=")):
+                cell.value = fx_formula(row)
                 if row > 3:
                     cell._style = copy(ws.cell(row - 1, 15)._style)
                 changes += 1
