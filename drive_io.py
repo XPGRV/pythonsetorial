@@ -189,11 +189,76 @@ def _fix_comment_paths(path: str) -> None:
     shutil.move(tmp, path)
 
 
+def _fix_single_cell_array_formulas(path: str) -> None:
+    """Remove metadados de formula matricial de 1 celula.
+
+    O openpyxl pode preservar/gravar formulas como:
+        <f t="array" ref="T5">...</f>
+    Quando esse padrao aparece em muitas celulas individuais, o Excel pode abrir
+    a planilha com reparo:
+        "Repaired Records: Cell information from /xl/worksheets/sheetN.xml"
+
+    Para formulas cujo `ref` e exatamente a propria celula (`r`), removemos
+    apenas os atributos `t="array"` e `ref="..."`. A formula em si permanece.
+    """
+    import re
+    import shutil
+    import tempfile
+    import zipfile
+
+    cell_re = re.compile(
+        r'(<c\b[^>]*\br="([^"]+)"[^>]*>.*?</c>)',
+        flags=re.DOTALL,
+    )
+    formula_re = re.compile(r"<f\b([^>]*)>", flags=re.DOTALL)
+
+    def normalize_cell(match: re.Match) -> str:
+        cell_xml = match.group(1)
+        cell_ref = match.group(2)
+        f_match = formula_re.search(cell_xml)
+        if not f_match:
+            return cell_xml
+
+        attrs = f_match.group(1)
+        if not re.search(r'\bt="array"', attrs):
+            return cell_xml
+
+        ref_match = re.search(r'\bref="([^"]+)"', attrs)
+        if not ref_match or ref_match.group(1) != cell_ref:
+            return cell_xml
+
+        attrs = re.sub(r'\s+t="array"', "", attrs)
+        attrs = re.sub(r'\s+ref="[^"]+"', "", attrs)
+        novo_f = f"<f{attrs}>"
+        return cell_xml[: f_match.start()] + novo_f + cell_xml[f_match.end() :]
+
+    mudou = False
+    with zipfile.ZipFile(path, "r") as zin:
+        fd, tmp = tempfile.mkstemp(suffix=".xlsm")
+        os.close(fd)
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if re.match(r"xl/worksheets/sheet\d+\.xml$", item.filename):
+                    txt = data.decode("utf-8")
+                    novo = cell_re.sub(normalize_cell, txt)
+                    if novo != txt:
+                        mudou = True
+                        data = novo.encode("utf-8")
+                zout.writestr(item, data)
+
+    if mudou:
+        shutil.move(tmp, path)
+    else:
+        os.remove(tmp)
+
+
 def update_file(file_id: str, local_path: str, mime: str = MIME_XLSM) -> dict:
     """Sobrescreve o conteudo do arquivo existente no Drive (in-place)."""
     print("[Drive] Preparando upload da planilha...", flush=True)
     t0 = time.monotonic()
     _fix_comment_paths(local_path)
+    _fix_single_cell_array_formulas(local_path)
     media = MediaFileUpload(local_path, mimetype=mime, resumable=False)
     res = (
         drive()
