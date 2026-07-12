@@ -198,8 +198,8 @@ def _fix_single_cell_array_formulas(path: str) -> None:
     a planilha com reparo:
         "Repaired Records: Cell information from /xl/worksheets/sheetN.xml"
 
-    Para formulas cujo `ref` e exatamente a propria celula (`r`), removemos
-    apenas os atributos `t="array"` e `ref="..."`. A formula em si permanece.
+    Para formulas cujo `ref` e uma unica celula, removemos apenas os atributos
+    `t="array"` e `ref="..."`. A formula em si permanece.
     """
     import re
     import shutil
@@ -224,7 +224,12 @@ def _fix_single_cell_array_formulas(path: str) -> None:
             return cell_xml
 
         ref_match = re.search(r'\bref="([^"]+)"', attrs)
-        if not ref_match or ref_match.group(1) != cell_ref:
+        if not ref_match:
+            return cell_xml
+
+        formula_ref = ref_match.group(1)
+        ref_unica_celula = re.match(r"^\$?[A-Za-z]{1,3}\$?\d+$", formula_ref)
+        if formula_ref != cell_ref and not ref_unica_celula:
             return cell_xml
 
         attrs = re.sub(r'\s+t="array"', "", attrs)
