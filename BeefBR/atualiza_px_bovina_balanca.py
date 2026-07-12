@@ -809,8 +809,134 @@ def main_cloud_beefbr():
         workbook.close()
 
 
+def main_cloud_frangobr():
+    """Modo GitHub Actions (FrangoBR): preco de exportacao nas cols M/N.
+    - SECEX disponivel: M ==SECEX!<usd> (verde), N ==SECEX!<brl> (preto).
+    - So Balanca:       M = valor hardcoded (azul), N ==M*T (laranja).
+    Nao existe coluna equivalente ao F do BeefBR: N ja e preco*cambio direto.
+    """
+    from copy import copy
+    from pathlib import Path
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import drive_io
+
+    def month_key(value):
+        if isinstance(value, datetime.datetime):
+            value = value.date()
+        return (value.year, value.month) if isinstance(value, datetime.date) else None
+
+    def number(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def secex_source_column(ws, destination, fallback):
+        for row in range(ws.max_row, 4, -1):
+            formula = ws.cell(row, destination).value
+            if not isinstance(formula, str) or "SECEX!" not in formula.upper():
+                continue
+            match = re.search(r"(?:\[[^\]]+\])?SECEX!([A-Z]+)\d+", formula, re.I)
+            if match:
+                col = 0
+                for ch in match.group(1).upper():
+                    col = col * 26 + ord(ch) - ord("A") + 1
+                return col
+        return fallback
+
+    def copy_style(ws, s, t, cols):
+        for c in cols:
+            src, tgt = ws.cell(s, c), ws.cell(t, c)
+            tgt._style = copy(src._style)
+            tgt.font = copy(src.font)
+            tgt.fill = copy(src.fill)
+            tgt.border = copy(src.border)
+            tgt.alignment = copy(src.alignment)
+            tgt.number_format = src.number_format
+
+    GREEN_A, BLUE_A, ORANGE_A, BLACK_A = "FF00B050", "FF0070C0", "FFED7D31", "FF000000"
+
+    def set_color(cell, argb):
+        f = cell.font
+        cell.font = Font(name=f.name, size=f.size, bold=f.bold, italic=f.italic,
+                         underline=f.underline, color=argb)
+
+    PRICE_COL, FORMULA_COL, FX_COL = 13, 14, 20  # M, N, T
+    M, T = get_column_letter(PRICE_COL), get_column_letter(FX_COL)
+
+    content = download_setores_produtos()
+    prices, balance_year, balance_month = parse_prices(content)
+    file_id = drive_io.find_file_id(FRANGOBR_NAME)
+    path = drive_io.download_to_temp(file_id)
+    workbook = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
+    try:
+        frango = workbook["FrangoBR"]
+        secex = workbook["SECEX"]
+        frango_rows = {
+            month_key(frango.cell(r, 2).value): r
+            for r in range(5, frango.max_row + 1)
+            if month_key(frango.cell(r, 2).value)
+        }
+        secex_rows = {
+            month_key(secex.cell(r, 2).value): r
+            for r in range(3, secex.max_row + 1)
+            if month_key(secex.cell(r, 2).value)
+        }
+        price_src = secex_source_column(frango, PRICE_COL, 12)   # SECEX col USD (frango)
+        brl_src = secex_source_column(frango, FORMULA_COL, 13)   # SECEX col BRL (frango)
+        price_letter = get_column_letter(price_src)
+        brl_letter = get_column_letter(brl_src)
+
+        changes = 0
+        # SECEX prevalece quando o dado mensal existe.
+        for period, secex_row in secex_rows.items():
+            frow = frango_rows.get(period)
+            usd = number(secex.cell(secex_row, price_src).value)
+            if frow is None or usd is None:
+                continue
+            copy_style(frango, max(5, frow - 1), frow, (PRICE_COL, FORMULA_COL, FX_COL))
+            frango.cell(frow, PRICE_COL).value = f"=SECEX!{price_letter}{secex_row}"
+            frango.cell(frow, FORMULA_COL).value = f"=SECEX!{brl_letter}{secex_row}"
+            set_color(frango.cell(frow, PRICE_COL), GREEN_A)   # M verde (SECEX)
+            set_color(frango.cell(frow, FORMULA_COL), BLACK_A)  # N preto (SECEX)
+            changes += 1
+
+        # Balanca preenche o mes mais recente ainda sem SECEX.
+        period = balance_year, balance_month
+        frow = frango_rows.get(period)
+        srow = secex_rows.get(period)
+        secex_available = (
+            srow is not None and number(secex.cell(srow, price_src).value) is not None
+        )
+        if frow is not None and not secex_available:
+            copy_style(frango, max(5, frow - 1), frow, (PRICE_COL, FORMULA_COL, FX_COL))
+            frango.cell(frow, PRICE_COL).value = prices["fran"] / 1000   # M hardcoded (azul)
+            frango.cell(frow, FORMULA_COL).value = f"={M}{frow}*{T}{frow}"  # N = M*T (laranja)
+            set_color(frango.cell(frow, PRICE_COL), BLUE_A)
+            set_color(frango.cell(frow, FORMULA_COL), ORANGE_A)
+            changes += 1
+
+        if changes:
+            workbook.calculation.fullCalcOnLoad = True
+            workbook.calculation.forceFullCalc = True
+            workbook.save(path)
+            drive_io.update_file(file_id, path)
+        print(
+            f"Preco FrangoBR: {changes} mes(es) sincronizado(s); "
+            f"Balanca {balance_month:02d}/{balance_year} "
+            f"{'ignorada (SECEX disponivel)' if secex_available else 'aplicada na ponta'}.")
+    finally:
+        workbook.close()
+
+
 if __name__ == "__main__":
     if "--cloud-beefbr" in sys.argv:
         main_cloud_beefbr()
+    elif "--cloud-frangobr" in sys.argv:
+        main_cloud_frangobr()
     else:
         main()
