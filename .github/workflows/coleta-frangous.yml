@@ -1,28 +1,14 @@
 name: Coleta FrangoUS
-
-# Roda os coletores do FrangoUS na nuvem, em SEQUENCIA (nunca em paralelo —
-# todos gravam no mesmo FrangoUS.xlsm no Drive via service account).
-# O consolidador (atualizar_frangoUS) roda por ULTIMO — puxa as formulas ate
-# as linhas novas; elas so ganham valor quando o PC Bloomberg recalcular.
-#
-# Secrets: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
-#          NASS_API_KEY, MARS_API_KEY
-
 on:
-  # Ultimo na fila: inicia quando o BeefUS terminar, mesmo com erro.
   workflow_run:
     workflows: ["Coleta BeefUS"]
     types: [completed]
   workflow_dispatch:
-
-# Trava compartilhada por todas as coletas, inclusive disparos manuais.
 concurrency:
   group: coleta-planilhas
   cancel-in-progress: false
-
 jobs:
   coleta:
-    # Tem mais etapas; o limite ainda evita travamento indefinido.
     timeout-minutes: 35
     runs-on: ubuntu-latest
     env:
@@ -32,69 +18,9 @@ jobs:
       MARS_API_KEY: ${{ secrets.MARS_API_KEY }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Instala dependencias
-        run: pip install -r requirements.txt
-
-      - name: Resumo (cabecalho)
-        run: echo "## Coleta FrangoUS — $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: production (coluna C)
-        run: |
-          python FrangoUS/atualiza_production_frangous.py | tee /tmp/o.txt
-          echo "- **production (col C):** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: production chicks hatched (coluna G)
-        run: |
-          python FrangoUS/atualiza_production_frangous_chicks_hatched.py | tee /tmp/o.txt
-          echo "- **chicks hatched (col G):** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: abates USDA (coluna H)
-        run: |
-          python FrangoUS/atualiza_abates_frangous_usda.py | tee /tmp/o.txt
-          echo "- **abates USDA (col H):** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: production rate of lay (coluna D)
-        run: |
-          python FrangoUS/atualiza_production_frangous_rateolay.py | tee /tmp/o.txt
-          echo "- **rate of lay (col D):** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: intended placements (coluna F)
-        run: |
-          python FrangoUS/atualiza_intended_placements_frangous.py | tee /tmp/o.txt
-          echo "- **intended placements (col F):** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: usda frangous (colunas Q/R/S)
-        run: |
-          python FrangoUS/atualiza_usda_frangous.py | tee /tmp/o.txt
-          echo "- **usda frangous (col Q/R/S):** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: forecast ERS LDP (aba Forecast)
-        run: |
-          python FrangoUS/coletar_usda_ers_ldp_forecasts.py | tee /tmp/o.txt
-          echo "- **forecast ERS LDP (aba Forecast):** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: wholesale broiler composite (coluna T)
-        run: |
-          python FrangoUS/atualiza_wholesale_broiler_composite.py | tee /tmp/o.txt
-          echo "- **wholesale composite (col T):** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: national composite (aba NationalComposite)
-        run: |
-          python FrangoUS/atualiza_national_composite.py | tee /tmp/o.txt
-          echo "- **national composite:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: national composite price (coluna U)
-        run: |
-          python FrangoUS/atualiza_national_composite_price.py | tee /tmp/o.txt
-          echo "- **national composite price (col U):** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      # Consolidador — por ULTIMO: puxa as formulas ate as linhas novas.
-      - name: consolidador FrangoUS (extend formulas)
-        run: |
-          python FrangoUS/atualizar_frangoUS.py | tee /tmp/o.txt
-          echo "- **consolidador:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
+      - run: pip install -r requirements.txt
+      - name: Pipeline FrangoUS
+        run: python FrangoUS/atualizar_frangous_pipeline.py | tee /tmp/o.txt

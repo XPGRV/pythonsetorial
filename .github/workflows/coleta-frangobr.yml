@@ -1,31 +1,14 @@
 name: Coleta FrangoBR
-
-# Roda os coletores do FrangoBR na nuvem, em SEQUENCIA (todos gravam no mesmo
-# FrangoBR.xlsm no Drive). Roda ANTES do Bloomberg das 22h (que recalcula via
-# F9 as formulas que o openpyxl deixa sem cache).
-#
-# NAO inclui o Nielsen (atualiza_nielsen_processados): ele le um arquivo manual
-# no PC do usuario, entao continua rodando local.
-#
-# Secrets: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
-
 on:
-  # Encadeado: dispara automaticamente quando o "Coleta BeefBR" termina — o
-  # FrangoBR copia a aba SECEX do BeefBR.xlsm, entao precisa do BeefBR atualizado
-  # antes. O BeefBR e quem tem o cron das 20h BRT.
   workflow_run:
     workflows: ["Coleta BeefBR"]
     types: [completed]
   workflow_dispatch:
-
 concurrency:
-  # Trava compartilhada por todas as coletas, inclusive disparos manuais.
   group: coleta-planilhas
   cancel-in-progress: false
-
 jobs:
   coleta:
-    # Continua a fila mesmo se o BeefBR falhar ou expirar o tempo.
     timeout-minutes: 25
     runs-on: ubuntu-latest
     env:
@@ -33,45 +16,9 @@ jobs:
       GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Instala dependencias
-        run: pip install -r requirements.txt
-
-      - name: Resumo (cabecalho)
-        run: echo "## Coleta FrangoBR — $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
-
-      # 1) Traz a aba SECEX do BeefBR.xlsm p/ o FrangoBR.xlsm (corrige formulas).
-      - name: copiar SECEX (BeefBR -> FrangoBR)
-        run: |
-          python FrangoBR/copiar_secex.py | tee /tmp/o.txt
-          echo "- **copiar SECEX:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: abates SIF (Frango+Galinha, cols F/G)
-        run: |
-          python FrangoBR/atualiza_abates_frango.py | tee /tmp/o.txt
-          echo "- **abates SIF:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: abates SIDRA (cabecas/peso, cols C/D)
-        run: |
-          python FrangoBR/atualiza_sidra_frango.py | tee /tmp/o.txt
-          echo "- **abates SIDRA:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: IPCA processados (aba Processados)
-        run: |
-          python FrangoBR/ipca_api_extract.py | tee /tmp/o.txt
-          echo "- **IPCA:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: preco exportacao (cols M/N)
-        run: |
-          python BeefBR/atualiza_px_bovina_balanca.py --cloud-frangobr | tee /tmp/o.txt
-          echo "- **preco exportacao:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      # Consolidador por ULTIMO: puxa as formulas ate as linhas novas.
-      - name: consolidador FrangoBR (extend formulas)
-        run: |
-          python FrangoBR/atualizar_frangobr.py | tee /tmp/o.txt
-          echo "- **consolidador:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
+      - run: pip install -r requirements.txt
+      - name: Pipeline FrangoBR
+        run: python FrangoBR/atualizar_frangobr_pipeline.py | tee /tmp/o.txt

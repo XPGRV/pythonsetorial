@@ -23,11 +23,14 @@ ARQUIVOS = [
     "BeefUS.xlsm",
     "FrangoBR.xlsm",
     "Planilha - Selic.xlsm",
+    "WEG - Setorial.xlsm",
 ]
 
 INTERVALO_VERIFICACAO = 3
 VERIFICACOES_ESTAVEIS = 3
 TEMPO_MINIMO_ATUALIZACAO = 15
+TEMPO_ESTABILIDADE_VALORES = 30
+TIMEOUT_ATUALIZACAO = 10 * 60
 
 XL_DONE = 0
 XL_VALUES = -4163
@@ -71,9 +74,10 @@ def _iterar_valores(valor):
         yield valor
 
 
-def contar_pendencias_bloomberg(wb) -> int:
-    """Conta mensagens temporarias do Bloomberg nas areas usadas."""
+def ler_estado_bloomberg(wb) -> tuple[int, int]:
+    """Retorna pendencias e uma assinatura dos valores atuais da planilha."""
     pendencias = 0
+    assinatura = 0
 
     for ws in wb.Worksheets:
         try:
@@ -97,40 +101,64 @@ def contar_pendencias_bloomberg(wb) -> int:
                 pass
 
         for valor in _iterar_valores(valores):
+            try:
+                assinatura = ((assinatura * 1000003) ^ hash(valor)) & 0xFFFFFFFFFFFFFFFF
+            except TypeError:
+                assinatura = (
+                    (assinatura * 1000003) ^ hash(repr(valor))
+                ) & 0xFFFFFFFFFFFFFFFF
+
             if not isinstance(valor, str):
                 continue
             texto = valor.strip().lower()
             if any(marcador in texto for marcador in MARCADORES_PENDENTES):
                 pendencias += 1
 
-    return pendencias
+    return pendencias, assinatura
 
 
 def aguardar_conclusao(excel, wb) -> None:
-    """Espera conclusao real; nao usa um prazo fixo para cortar a tarefa."""
+    """Espera a conclusao e falha de modo explicito se o Excel travar."""
     estaveis = 0
     inicio = time.monotonic()
     ultimo_aviso = 0.0
-    f9_reforco_enviado = False
+    assinatura_anterior = None
+    valores_estaveis_desde = inicio
 
     while estaveis < VERIFICACOES_ESTAVEIS:
         calculo_pronto = excel.CalculationState == XL_DONE
-        pendencias = contar_pendencias_bloomberg(wb)
+        pendencias, assinatura = ler_estado_bloomberg(wb)
+
+        if assinatura != assinatura_anterior:
+            assinatura_anterior = assinatura
+            valores_estaveis_desde = time.monotonic()
 
         decorrido = time.monotonic() - inicio
         tempo_minimo_cumprido = decorrido >= TEMPO_MINIMO_ATUALIZACAO
 
-        # O Bloomberg frequentemente so aceita o F9 depois que as formulas
-        # entram em "Requesting Data". Reenvia uma vez nesse momento exato.
-        if pendencias > 0 and not f9_reforco_enviado:
-            print("  Bloomberg em Requesting Data; reenviando F9...")
-            enviar_f9(excel, wb)
-            f9_reforco_enviado = True
-            estaveis = 0
-            time.sleep(INTERVALO_VERIFICACAO)
-            continue
+        if decorrido >= TIMEOUT_ATUALIZACAO:
+            raise TimeoutError(
+                "Excel/Bloomberg nao concluiu em "
+                f"{TIMEOUT_ATUALIZACAO // 60} minutos "
+                f"(CalculationState={excel.CalculationState}, "
+                f"pendencias={pendencias})."
+            )
 
-        if calculo_pronto and pendencias == 0 and tempo_minimo_cumprido:
+        valores_estaveis = (
+            time.monotonic() - valores_estaveis_desde
+            >= TEMPO_ESTABILIDADE_VALORES
+        )
+        # O add-in Bloomberg pode deixar CalculationState permanentemente em
+        # xlCalculating, embora o Excel ja mostre "Ready" e o BDH tenha parado
+        # de alterar a planilha. Valores sem mudanca por 30 s sao a confirmacao
+        # observavel de que o fluxo automatico terminou.
+        calculo_bloomberg_concluido = calculo_pronto or valores_estaveis
+
+        if (
+            calculo_bloomberg_concluido
+            and pendencias == 0
+            and tempo_minimo_cumprido
+        ):
             estaveis += 1
         else:
             estaveis = 0
@@ -138,7 +166,9 @@ def aguardar_conclusao(excel, wb) -> None:
         if decorrido - ultimo_aviso >= 15:
             print(
                 f"  Aguardando: calculo={'OK' if calculo_pronto else 'em andamento'}, "
-                f"pendencias Bloomberg={pendencias}, {decorrido:.0f}s"
+                f"pendencias Bloomberg={pendencias}, "
+                f"valores estaveis={time.monotonic() - valores_estaveis_desde:.0f}s, "
+                f"{decorrido:.0f}s"
             )
             ultimo_aviso = decorrido
 
@@ -155,20 +185,6 @@ def salvar_e_confirmar(wb) -> None:
         time.sleep(1)
 
     print("  Salvamento confirmado pelo Excel.")
-
-
-def enviar_f9(excel, wb) -> None:
-    """Coloca o Excel em primeiro plano e envia F9 sem bloquear o Python."""
-    import pyautogui
-    import win32con
-    import win32gui
-
-    wb.Activate()
-    hwnd = excel.Hwnd
-    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-    win32gui.SetForegroundWindow(hwnd)
-    time.sleep(1)
-    pyautogui.press("f9")
 
 
 def processar_arquivo(excel, path: Path) -> None:
@@ -189,15 +205,9 @@ def processar_arquivo(excel, path: Path) -> None:
         if wb.ReadOnly:
             raise RuntimeError(f"{path.name} foi aberto somente para leitura.")
 
-        try:
-            wb.RefreshAll()
-        except Exception:
-            pass
-
-        # Envia o primeiro F9; se surgir Requesting Data, o monitor reenvia.
-        print("  Enviando F9 para iniciar o calculo Bloomberg...")
-        enviar_f9(excel, wb)
-
+        # O Workbook_Open e o add-in Bloomberg fazem todo o trabalho. Qualquer
+        # RefreshAll/F9 concorrente pode reiniciar o BDH durante a limpeza.
+        print("  Planilha aberta; aguardando o fluxo automatico do macro/Bloomberg...")
         aguardar_conclusao(excel, wb)
         salvar_e_confirmar(wb)
 

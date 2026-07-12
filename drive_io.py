@@ -47,6 +47,11 @@ except ImportError:  # pragma: no cover - fallback para ambiente local antigo
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 MIME_XLSM = "application/vnd.ms-excel.sheet.macroEnabled.12"
 DRIVE_TIMEOUT_S = int(os.environ.get("DRIVE_TIMEOUT_S", "120"))
+DRIVE_NUM_RETRIES = int(os.environ.get("DRIVE_NUM_RETRIES", "5"))
+DRIVE_UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024
+SHARED_PATH_ENV = "DRIVE_IO_SHARED_PATH"
+SHARED_FILE_ID_ENV = "DRIVE_IO_SHARED_FILE_ID"
+SHARED_NAME_ENV = "DRIVE_IO_SHARED_NAME"
 
 _SA_FILE = Path(__file__).resolve().parent / "service-account.json"
 
@@ -106,6 +111,13 @@ def drive():
 
 def find_file_id(name: str, folder_id: str | None = None) -> str:
     """ID do arquivo pelo nome (opcionalmente dentro de uma pasta). Erra se 0 ou >1."""
+    shared_path = os.environ.get(SHARED_PATH_ENV)
+    shared_file_id = os.environ.get(SHARED_FILE_ID_ENV)
+    shared_name = os.environ.get(SHARED_NAME_ENV)
+    if shared_path and shared_file_id and shared_name == name:
+        print(f"[Drive] Usando arquivo compartilhado local para {name!r}.", flush=True)
+        return shared_file_id
+
     print(f"[Drive] Localizando {name!r}...", flush=True)
     t0 = time.monotonic()
     escaped = name.replace("'", "\\'")
@@ -136,6 +148,12 @@ def find_file_id(name: str, folder_id: str | None = None) -> str:
 
 def download_to_temp(file_id: str, suffix: str = ".xlsm") -> str:
     """Baixa o arquivo para um temporario e devolve o caminho."""
+    shared_path = os.environ.get(SHARED_PATH_ENV)
+    shared_file_id = os.environ.get(SHARED_FILE_ID_ENV)
+    if shared_path and shared_file_id == file_id:
+        print("[Drive] Reutilizando planilha temporaria compartilhada.", flush=True)
+        return shared_path
+
     print("[Drive] Baixando planilha para arquivo temporario...", flush=True)
     t0 = time.monotonic()
     buf = io.BytesIO()
@@ -260,12 +278,29 @@ def _fix_single_cell_array_formulas(path: str) -> None:
 
 def update_file(file_id: str, local_path: str, mime: str = MIME_XLSM) -> dict:
     """Sobrescreve o conteudo do arquivo existente no Drive (in-place)."""
+    shared_path = os.environ.get(SHARED_PATH_ENV)
+    shared_file_id = os.environ.get(SHARED_FILE_ID_ENV)
+    if (
+        shared_path
+        and shared_file_id == file_id
+        and Path(shared_path).resolve() == Path(local_path).resolve()
+    ):
+        print("[Drive] Upload adiado para o fim do pipeline.", flush=True)
+        return {"id": file_id, "deferred": True}
+
     print("[Drive] Preparando upload da planilha...", flush=True)
     t0 = time.monotonic()
     _fix_comment_paths(local_path)
     _fix_single_cell_array_formulas(local_path)
-    media = MediaFileUpload(local_path, mimetype=mime, resumable=False)
-    res = (
+    # Upload retomavel: se a conexao TLS cair no meio do envio, o cliente
+    # repete somente o chunk interrompido em vez de derrubar o workflow.
+    media = MediaFileUpload(
+        local_path,
+        mimetype=mime,
+        chunksize=DRIVE_UPLOAD_CHUNK_SIZE,
+        resumable=True,
+    )
+    request = (
         drive()
         .files()
         .update(
@@ -274,7 +309,17 @@ def update_file(file_id: str, local_path: str, mime: str = MIME_XLSM) -> dict:
             fields="id,name,size,modifiedTime,md5Checksum",
             supportsAllDrives=True,
         )
-        .execute()
     )
+
+    res = None
+    ultimo_progresso = -1
+    while res is None:
+        status, res = request.next_chunk(num_retries=DRIVE_NUM_RETRIES)
+        if status:
+            progresso = int(status.progress() * 100)
+            if progresso != ultimo_progresso:
+                print(f"[Drive] Upload {progresso}%.", flush=True)
+                ultimo_progresso = progresso
+
     print(f"[Drive] Upload concluido em {time.monotonic() - t0:.1f}s.", flush=True)
     return res

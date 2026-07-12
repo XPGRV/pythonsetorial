@@ -252,10 +252,12 @@ def update_production(nass_data: dict[tuple[int, int], float]) -> dict:
         return {"alteracoes": total, "novos": novos, "revisoes": revisoes, "fmt_fix": fmt_fix}
     finally:
         wb.close()
-        try:
-            os.remove(path)   # limpa o arquivo temporario baixado do Drive
-        except OSError:
-            pass
+        # No pipeline cloud, o mesmo temporario segue para as proximas etapas.
+        if not os.environ.get("DRIVE_IO_SHARED_PATH"):
+            try:
+                os.remove(path)   # limpa o arquivo temporario baixado do Drive
+            except OSError:
+                pass
 
 
 # ── 4. Main ───────────────────────────────────────────────────────────────────
