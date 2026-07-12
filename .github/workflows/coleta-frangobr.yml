@@ -10,8 +10,12 @@ name: Coleta FrangoBR
 # Secrets: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
 
 on:
-  schedule:
-    - cron: '0 23 * * 1-5'   # dias uteis 23h UTC = 20h BRT (antes do Bloomberg 22h)
+  # Encadeado: dispara automaticamente quando o "Coleta BeefBR" termina — o
+  # FrangoBR copia a aba SECEX do BeefBR.xlsm, entao precisa do BeefBR atualizado
+  # antes. O BeefBR e quem tem o cron das 20h BRT.
+  workflow_run:
+    workflows: ["Coleta BeefBR"]
+    types: [completed]
   workflow_dispatch:
 
 concurrency:
@@ -20,6 +24,8 @@ concurrency:
 
 jobs:
   coleta:
+    # So roda se o BeefBR terminou com SUCESSO (ou se for disparo manual).
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
       GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
