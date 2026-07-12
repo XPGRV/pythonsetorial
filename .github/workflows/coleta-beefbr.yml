@@ -28,4 +28,4 @@ jobs:
       - name: Resumo
         run: echo "## Coleta BeefBR - $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
       - name: Pipeline BeefBR
-        run: python BeefBR/atualizar_beefbr_pipeline.py --cloud | tee /tmp/o.txt
+        run: python BeefBR/atualizar_beefbr_pipeline.py | tee /tmp/o.txt
