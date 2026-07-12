@@ -28,6 +28,7 @@ from __future__ import annotations
 import io
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import net  # noqa: F401 — ao importar, deixa todo `requests` resiliente (retry)
@@ -36,8 +37,16 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
+try:
+    import httplib2
+    import google_auth_httplib2
+except ImportError:  # pragma: no cover - fallback para ambiente local antigo
+    httplib2 = None
+    google_auth_httplib2 = None
+
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 MIME_XLSM = "application/vnd.ms-excel.sheet.macroEnabled.12"
+DRIVE_TIMEOUT_S = int(os.environ.get("DRIVE_TIMEOUT_S", "120"))
 
 _SA_FILE = Path(__file__).resolve().parent / "service-account.json"
 
@@ -73,12 +82,32 @@ def drive():
     """Cliente da Drive API v3 (com cache)."""
     global _drive_client
     if _drive_client is None:
-        _drive_client = build("drive", "v3", credentials=_credentials(), cache_discovery=False)
+        creds = _credentials()
+        if httplib2 is not None and google_auth_httplib2 is not None:
+            http = google_auth_httplib2.AuthorizedHttp(
+                creds,
+                http=httplib2.Http(timeout=DRIVE_TIMEOUT_S),
+            )
+            _drive_client = build(
+                "drive",
+                "v3",
+                http=http,
+                cache_discovery=False,
+            )
+        else:
+            _drive_client = build(
+                "drive",
+                "v3",
+                credentials=creds,
+                cache_discovery=False,
+            )
     return _drive_client
 
 
 def find_file_id(name: str, folder_id: str | None = None) -> str:
     """ID do arquivo pelo nome (opcionalmente dentro de uma pasta). Erra se 0 ou >1."""
+    print(f"[Drive] Localizando {name!r}...", flush=True)
+    t0 = time.monotonic()
     escaped = name.replace("'", "\\'")
     q = f"name = '{escaped}' and trashed = false"
     if folder_id:
@@ -101,20 +130,30 @@ def find_file_id(name: str, folder_id: str | None = None) -> str:
     if len(files) > 1:
         locais = ", ".join(f"{f['id']}" for f in files)
         raise RuntimeError(f"Mais de uma '{name}' encontrada (ids: {locais}). Passe folder_id.")
+    print(f"[Drive] {name!r} encontrada em {time.monotonic() - t0:.1f}s.", flush=True)
     return files[0]["id"]
 
 
 def download_to_temp(file_id: str, suffix: str = ".xlsm") -> str:
     """Baixa o arquivo para um temporario e devolve o caminho."""
+    print("[Drive] Baixando planilha para arquivo temporario...", flush=True)
+    t0 = time.monotonic()
     buf = io.BytesIO()
     req = drive().files().get_media(fileId=file_id, supportsAllDrives=True)
     dl = MediaIoBaseDownload(buf, req)
     done = False
     while not done:
-        _, done = dl.next_chunk()
+        status, done = dl.next_chunk()
+        if status:
+            print(f"[Drive] Download {int(status.progress() * 100)}%.", flush=True)
     fd, path = tempfile.mkstemp(suffix=suffix)
     with os.fdopen(fd, "wb") as fh:
         fh.write(buf.getvalue())
+    tamanho_mb = len(buf.getvalue()) / (1024 * 1024)
+    print(
+        f"[Drive] Download concluido ({tamanho_mb:.1f} MB) em {time.monotonic() - t0:.1f}s.",
+        flush=True,
+    )
     return path
 
 
@@ -152,9 +191,11 @@ def _fix_comment_paths(path: str) -> None:
 
 def update_file(file_id: str, local_path: str, mime: str = MIME_XLSM) -> dict:
     """Sobrescreve o conteudo do arquivo existente no Drive (in-place)."""
+    print("[Drive] Preparando upload da planilha...", flush=True)
+    t0 = time.monotonic()
     _fix_comment_paths(local_path)
     media = MediaFileUpload(local_path, mimetype=mime, resumable=False)
-    return (
+    res = (
         drive()
         .files()
         .update(
@@ -165,3 +206,5 @@ def update_file(file_id: str, local_path: str, mime: str = MIME_XLSM) -> dict:
         )
         .execute()
     )
+    print(f"[Drive] Upload concluido em {time.monotonic() - t0:.1f}s.", flush=True)
+    return res

@@ -1,6 +1,8 @@
 ﻿# Dependencias dos coletores que rodam na nuvem (GitHub Actions).
 google-api-python-client
 google-auth
+google-auth-httplib2
+httplib2
 openpyxl
 requests
 pandas
