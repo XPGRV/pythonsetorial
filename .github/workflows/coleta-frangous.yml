@@ -9,7 +9,7 @@ name: Coleta FrangoUS
 #          NASS_API_KEY, MARS_API_KEY
 
 on:
-  # Ultimo na fila: so inicia depois de o BeefUS concluir com sucesso.
+  # Ultimo na fila: inicia quando o BeefUS terminar, mesmo com erro.
   workflow_run:
     workflows: ["Coleta BeefUS"]
     types: [completed]
@@ -22,7 +22,8 @@ concurrency:
 
 jobs:
   coleta:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # Tem mais etapas; o limite ainda evita travamento indefinido.
+    timeout-minutes: 35
     runs-on: ubuntu-latest
     env:
       GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}

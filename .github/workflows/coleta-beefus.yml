@@ -9,7 +9,7 @@
 #          NASS_API_KEY
 
 on:
-  # Terceiro na fila: so inicia depois de o FrangoBR concluir com sucesso.
+  # Terceiro na fila: inicia quando o FrangoBR terminar, mesmo com erro.
   workflow_run:
     workflows: ["Coleta FrangoBR"]
     types: [completed]
@@ -21,8 +21,8 @@ concurrency:
 
 jobs:
   coleta:
-    # Mantem o botao manual, mas nao continua a fila se o anterior falhar.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # Nunca deixa um travamento impedir o FrangoUS de rodar em seguida.
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     env:
       GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}

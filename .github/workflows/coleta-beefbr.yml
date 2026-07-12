@@ -12,6 +12,8 @@ concurrency:
 
 jobs:
   coleta:
+    # Impede que uma fonte externa presa bloqueie toda a fila noturna.
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     env:
       GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
