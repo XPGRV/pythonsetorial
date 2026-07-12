@@ -118,8 +118,41 @@ def download_to_temp(file_id: str, suffix: str = ".xlsm") -> str:
     return path
 
 
+def _fix_comment_paths(path: str) -> None:
+    """O openpyxl salva comentarios em xl/comments/commentN.xml — caminho que o
+    Excel trata como 'conteudo com problema' (pede recuperacao ao abrir, e pode
+    travar o macro do Bloomberg). Move de volta pro padrao xl/commentsN.xml e
+    corrige as referencias (.rels e [Content_Types]). No-op se nao houver."""
+    import re
+    import shutil
+    import tempfile
+    import zipfile
+
+    with zipfile.ZipFile(path, "r") as zin:
+        names = zin.namelist()
+        if not any(re.match(r"xl/comments/comment\d+\.xml$", n) for n in names):
+            return  # nada a corrigir
+        fd, tmp = tempfile.mkstemp(suffix=".xlsm")
+        os.close(fd)
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                m = re.match(r"xl/comments/comment(\d+)\.xml$", item.filename)
+                if m:
+                    zout.writestr(f"xl/comments{m.group(1)}.xml", data)
+                    continue
+                if item.filename.endswith(".rels") or item.filename == "[Content_Types].xml":
+                    txt = data.decode("utf-8")
+                    txt = re.sub(r"/xl/comments/comment(\d+)\.xml", r"/xl/comments\1.xml", txt)
+                    txt = re.sub(r"(\.\./)?comments/comment(\d+)\.xml", r"\1comments\2.xml", txt)
+                    data = txt.encode("utf-8")
+                zout.writestr(item, data)
+    shutil.move(tmp, path)
+
+
 def update_file(file_id: str, local_path: str, mime: str = MIME_XLSM) -> dict:
     """Sobrescreve o conteudo do arquivo existente no Drive (in-place)."""
+    _fix_comment_paths(local_path)
     media = MediaFileUpload(local_path, mimetype=mime, resumable=False)
     return (
         drive()
