@@ -9,20 +9,20 @@ name: Coleta FrangoUS
 #          NASS_API_KEY, MARS_API_KEY
 
 on:
-  schedule:
-    # Dias uteis 23h UTC = 20h BRT — ANTES do Bloomberg das 22h (que recalcula
-    # via F9 as formulas que o openpyxl deixa sem cache) e da dashboard das 8h.
-    # Ordem: nuvem 20h -> Bloomberg 22h -> dashboard 8h (dia seguinte).
-    - cron: '0 23 * * 1-5'
+  # Ultimo na fila: so inicia depois de o BeefUS concluir com sucesso.
+  workflow_run:
+    workflows: ["Coleta BeefUS"]
+    types: [completed]
   workflow_dispatch:
 
-# Nunca deixa duas execucoes escreverem no FrangoUS.xlsm ao mesmo tempo.
+# Trava compartilhada por todas as coletas, inclusive disparos manuais.
 concurrency:
-  group: coleta-frangous
+  group: coleta-planilhas
   cancel-in-progress: false
 
 jobs:
   coleta:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
       GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}

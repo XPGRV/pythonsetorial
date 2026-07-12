@@ -6,7 +6,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: coleta-beefbr
+  # Inicio da fila noturna: os demais workflows sao disparados em cadeia.
+  group: coleta-planilhas
   cancel-in-progress: false
 
 jobs:

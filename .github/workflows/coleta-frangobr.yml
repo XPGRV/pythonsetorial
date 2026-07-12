@@ -19,7 +19,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: coleta-frangobr
+  # Trava compartilhada por todas as coletas, inclusive disparos manuais.
+  group: coleta-planilhas
   cancel-in-progress: false
 
 jobs:
