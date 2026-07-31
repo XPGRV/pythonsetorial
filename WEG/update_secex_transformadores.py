@@ -33,15 +33,17 @@ from datetime import date, datetime
 from pathlib import Path
 
 import requests
-import xlwings as xw
+import openpyxl
+from openpyxl.utils import column_index_from_string
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
 
 
 sys.stdout.reconfigure(encoding="utf-8")
 
 
-WORKBOOK_PATH = Path(
-    r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z\Arquivos\Setorial - Database\WEG - Setorial.xlsm"
-)
+WORKBOOK_NAME = "WEG - Setorial.xlsm"   # localizada no Drive via drive_io
 SHEET_NAME = "Transformadores"
 FIRST_DATA_ROW = 5
 
@@ -69,20 +71,23 @@ class Product:
     code: str
     name: str
     columns: dict[str, str]
-    price_col: str
+    price_col: str | None  # None = produto sem coluna de preco na planilha
     price_kind: str  # "unit" or "kg"
     ncm_codes: tuple[str, ...] = ()
 
 
+# A planilha mantem uma unica serie de preco: coluna W (US$/unid) para o
+# produto 850423. A coluna X e' formula de volume (=J*1000/W) e NAO deve ser
+# escrita. Os demais produtos ficam com price_col=None.
 PRODUCTS: tuple[Product, ...] = (
-    Product("850421", "Transformadores dieletricos liquido <= 650 kVA", {"total": "F", "sc": "G"}, "W", "unit", ("85042100",)),
-    Product("850422", "Transformadores dieletricos liquido > 650 e <= 10.000 kVA", {"total": "H", "sc": "I"}, "X", "unit", ("85042200",)),
-    Product("850423", "Transformadores dieletricos liquido > 10.000 kVA", {"total": "J", "sc": "K"}, "Y", "unit", ("85042300",)),
-    Product("850431", "Outros transformadores eletricos <= 1 kVA", {"total": "L", "sc": "M"}, "Z", "kg"),
-    Product("850432", "Outros transformadores eletricos > 1 e <= 16 kVA", {"total": "N", "sc": "O"}, "AA", "unit", ("85043229", "85043219", "85043221", "85043211")),
-    Product("850433", "Outros transformadores eletricos > 16 e <= 500 kVA", {"total": "P", "sc": "Q"}, "AB", "unit", ("85043300",)),
-    Product("850434", "Outros transformadores eletricos > 500 kVA", {"total": "R", "sc": "S"}, "AC", "unit", ("85043400",)),
-    Product("850490", "Partes de transformadores", {"total": "T", "sc": "U"}, "AD", "kg"),
+    Product("850421", "Transformadores dieletricos liquido <= 650 kVA", {"total": "F", "sc": "G"}, None, "unit", ("85042100",)),
+    Product("850422", "Transformadores dieletricos liquido > 650 e <= 10.000 kVA", {"total": "H", "sc": "I"}, None, "unit", ("85042200",)),
+    Product("850423", "Transformadores dieletricos liquido > 10.000 kVA", {"total": "J", "sc": "K"}, "W", "unit", ("85042300",)),
+    Product("850431", "Outros transformadores eletricos <= 1 kVA", {"total": "L", "sc": "M"}, None, "kg"),
+    Product("850432", "Outros transformadores eletricos > 1 e <= 16 kVA", {"total": "N", "sc": "O"}, None, "unit", ("85043229", "85043219", "85043221", "85043211")),
+    Product("850433", "Outros transformadores eletricos > 16 e <= 500 kVA", {"total": "P", "sc": "Q"}, None, "unit", ("85043300",)),
+    Product("850434", "Outros transformadores eletricos > 500 kVA", {"total": "R", "sc": "S"}, None, "unit", ("85043400",)),
+    Product("850490", "Partes de transformadores", {"total": "T", "sc": "U"}, None, "kg"),
 )
 
 
@@ -238,8 +243,8 @@ def fetch_prices(product: Product, first_year: int) -> dict[tuple[int, int], flo
 
 
 def read_column(sheet, column: str, last_row: int) -> list:
-    values = sheet.range(f"{column}{FIRST_DATA_ROW}:{column}{last_row}").value
-    return values if isinstance(values, list) else [values]
+    ci = column_index_from_string(column)
+    return [sheet.cell(r, ci).value for r in range(FIRST_DATA_ROW, last_row + 1)]
 
 
 def find_missing_cells(sheet, last_row: int):
@@ -247,7 +252,7 @@ def find_missing_cells(sheet, last_row: int):
     current = {
         product.code: {
             **{key: read_column(sheet, column, last_row) for key, column in product.columns.items()},
-            "price": read_column(sheet, product.price_col, last_row),
+            "price": read_column(sheet, product.price_col, last_row) if product.price_col else [],
         }
         for product in PRODUCTS
     }
@@ -261,6 +266,8 @@ def find_missing_cells(sheet, last_row: int):
         rows_by_month[month] = (FIRST_DATA_ROW + index, index)
         for product in PRODUCTS:
             for key in MISSING_KEYS:
+                if key == "price" and not product.price_col:
+                    continue  # produto sem coluna de preco na planilha
                 if not has_value(current[product.code][key][index]):
                     missing[product.code][key].add(month)
 
@@ -268,11 +275,17 @@ def find_missing_cells(sheet, last_row: int):
 
 
 def process_workbook(workbook, dry_run: bool) -> dict:
-    if SHEET_NAME not in [sheet.name for sheet in workbook.sheets]:
+    if SHEET_NAME not in workbook.sheetnames:
         raise RuntimeError(f"Aba {SHEET_NAME!r} nao encontrada.")
 
-    sheet = workbook.sheets[SHEET_NAME]
-    last_row = sheet.used_range.last_cell.row
+    sheet = workbook[SHEET_NAME]
+    # A aba tem max_row inflado (centenas de milhares de linhas vazias);
+    # o fim real dos dados e' o fim do grid de datas da coluna B.
+    last_row = FIRST_DATA_ROW
+    for r in range(FIRST_DATA_ROW, sheet.max_row + 1):
+        if sheet.cell(r, 2).value is None:
+            break
+        last_row = r
     rows_by_month, missing = find_missing_cells(sheet, last_row)
 
     products_to_fetch = [
@@ -332,7 +345,7 @@ def process_workbook(workbook, dry_run: bool) -> dict:
 
             if not dry_run:
                 for column, value, _ in pending:
-                    sheet.range(f"{column}{row_number}").value = value
+                    sheet.cell(row_number, column_index_from_string(column)).value = value
 
             written += len(pending)
             updated_months.add(month)
@@ -347,22 +360,11 @@ def process_workbook(workbook, dry_run: bool) -> dict:
 
 
 def open_workbook(read_only: bool):
-    target = str(WORKBOOK_PATH).lower()
-    for app in xw.apps:
-        for book in app.books:
-            try:
-                if str(Path(book.fullname)).lower() == target:
-                    log("Usando a planilha que ja esta aberta no Excel.")
-                    return app, book, False
-            except Exception:
-                continue
-
-    app = xw.App(visible=False, add_book=False)
-    app.api.AskToUpdateLinks = False
-    app.display_alerts = False
-    app.screen_updating = False
-    workbook = app.books.open(str(WORKBOOK_PATH), update_links=0, read_only=read_only)
-    return app, workbook, True
+    """Baixa a planilha do Google Drive e abre com openpyxl."""
+    file_id = drive_io.find_file_id(WORKBOOK_NAME)
+    path = drive_io.download_to_temp(file_id)
+    workbook = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
+    return file_id, path, workbook
 
 
 def main() -> None:
@@ -372,26 +374,19 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Consulta e mostra as alteracoes sem gravar.")
     args = parser.parse_args()
 
-    if not WORKBOOK_PATH.exists():
-        raise FileNotFoundError(f"Planilha nao encontrada: {WORKBOOK_PATH}")
-
-    app = None
     workbook = None
-    opened_by_script = False
     try:
-        app, workbook, opened_by_script = open_workbook(args.dry_run)
+        file_id, path, workbook = open_workbook(args.dry_run)
         result = process_workbook(workbook, args.dry_run)
         if result["written"] and not args.dry_run:
-            workbook.api.SaveLinkValues = True
-            workbook.save()
+            workbook.save(path)
+            drive_io.update_file(file_id, path)   # sobe de volta pro Drive
             log("Arquivo salvo.")
         elif not result["written"]:
             log("Nenhuma celula alterada.")
     finally:
-        if workbook is not None and opened_by_script:
+        if workbook is not None:
             workbook.close()
-        if app is not None and opened_by_script:
-            app.quit()
 
     mode = "DRY-RUN" if args.dry_run else "CONCLUIDO"
     print(f"\n[{mode}] {len(result['months'])} mes(es) atualizado(s), {result['written']} valor(es) preenchido(s).")

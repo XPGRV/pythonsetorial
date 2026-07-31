@@ -33,15 +33,17 @@ from datetime import date, datetime
 from pathlib import Path
 
 import requests
-import xlwings as xw
+import openpyxl
+from openpyxl.utils import column_index_from_string
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
 
 
 sys.stdout.reconfigure(encoding="utf-8")
 
 
-WORKBOOK_PATH = Path(
-    r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z\Arquivos\Setorial - Database\WEG - Setorial.xlsm"
-)
+WORKBOOK_NAME = "WEG - Setorial.xlsm"   # localizada no Drive via drive_io
 SHEET_NAME = "Motores"
 FIRST_DATA_ROW = 5
 
@@ -63,31 +65,31 @@ class Product:
     name: str
     total_col: str
     sc_col: str
-    price_col: str
+    price_col: str | None  # None = produto sem coluna de preco na planilha
     price_kind: str  # "unit" or "kg"
     ncm_codes: tuple[str, ...] = ()
 
 
 PRODUCTS: tuple[Product, ...] = (
-    Product("850120", "Motores eletricos universais de potencia > 37,5 W", "D", "E", "AR", "unit", ("85012000",)),
-    Product("850131", "Motores e geradores CC de potencia <= 750 W", "F", "G", "AS", "unit", ("85013110", "85013120")),
-    Product("850132", "Motores e geradores CC de potencia > 750 W e <= 75 kW", "H", "I", "AT", "unit", ("85013210", "85013220")),
-    Product("850133", "Motores e geradores CC de potencia > 75 kW e <= 375 kW", "J", "K", "AU", "unit", ("85013310", "85013320")),
-    Product("850134", "Motores e geradores CC de potencia > 375 kW", "L", "M", "AV", "unit", ("85013419", "85013420")),
-    Product("850140", "Outros motores CA monofasicos", "N", "O", "AW", "unit", ("85014019", "85014011", "85014029", "85014021")),
-    Product("850151", "Outros motores CA polifasicos <= 750 W", "P", "Q", "AX", "unit", ("85015110", "85015190", "85015120")),
-    Product("850152", "Outros motores CA polifasicos > 750 W e <= 75 kW", "R", "S", "AY", "unit", ("85015210", "85015290", "85015220")),
-    Product("850153", "Outros motores CA polifasicos > 75 kW", "T", "U", "AZ", "unit", ("85015310", "85015320", "85015390", "85015330")),
-    Product("850440", "Conversores eletricos estaticos", "W", "X", "BA", "kg"),
-    Product("850450", "Outras bobinas de reatancia e auto-inducao", "Y", "Z", "BB", "kg"),
-    Product("853620", "Disjuntores para tensao <= 1 kV", "AA", "AB", "BC", "unit", ("85362000",)),
-    Product("853521", "Disjuntores para tensao > 1 kV e < 72,5 kV", "AC", "AD", "BD", "unit", ("85352100",)),
-    Product("853641", "Reles para tensao <= 60 V", "AE", "AF", "BE", "unit", ("85364100",)),
-    Product("853649", "Outros reles para tensao > 60 V e <= 1.000 V", "AG", "AH", "BF", "unit", ("85364900",)),
-    Product("853650", "Outros interruptores, seccionadores e comutadores <= 1 kV", "AI", "AJ", "BG", "kg"),
-    Product("853690", "Outros aparelhos para interrupcao, seccionamento, protecao e ligacao <= 1 kV", "AK", "AL", "BH", "kg"),
-    Product("853710", "Quadros e paineis para tensao <= 1 kV", "AM", "AN", "BI", "kg"),
-    Product("853720", "Quadros e paineis para tensao > 1 kV", "AO", "AP", "BJ", "unit", ("85372090",)),
+    Product("850120", "Motores eletricos universais de potencia > 37,5 W", "D", "E", None, "unit", ("85012000",)),
+    Product("850131", "Motores e geradores CC de potencia <= 750 W", "F", "G", None, "unit", ("85013110", "85013120")),
+    Product("850132", "Motores e geradores CC de potencia > 750 W e <= 75 kW", "H", "I", None, "unit", ("85013210", "85013220")),
+    Product("850133", "Motores e geradores CC de potencia > 75 kW e <= 375 kW", "J", "K", None, "unit", ("85013310", "85013320")),
+    Product("850134", "Motores e geradores CC de potencia > 375 kW", "L", "M", None, "unit", ("85013419", "85013420")),
+    Product("850140", "Outros motores CA monofasicos", "N", "O", None, "unit", ("85014019", "85014011", "85014029", "85014021")),
+    Product("850151", "Outros motores CA polifasicos <= 750 W", "P", "Q", None, "unit", ("85015110", "85015190", "85015120")),
+    Product("850152", "Outros motores CA polifasicos > 750 W e <= 75 kW", "R", "S", None, "unit", ("85015210", "85015290", "85015220")),
+    Product("850153", "Outros motores CA polifasicos > 75 kW", "T", "U", None, "unit", ("85015310", "85015320", "85015390", "85015330")),
+    Product("850440", "Conversores eletricos estaticos", "W", "X", None, "kg"),
+    Product("850450", "Outras bobinas de reatancia e auto-inducao", "Y", "Z", None, "kg"),
+    Product("853620", "Disjuntores para tensao <= 1 kV", "AA", "AB", None, "unit", ("85362000",)),
+    Product("853521", "Disjuntores para tensao > 1 kV e < 72,5 kV", "AC", "AD", None, "unit", ("85352100",)),
+    Product("853641", "Reles para tensao <= 60 V", "AE", "AF", None, "unit", ("85364100",)),
+    Product("853649", "Outros reles para tensao > 60 V e <= 1.000 V", "AG", "AH", None, "unit", ("85364900",)),
+    Product("853650", "Outros interruptores, seccionadores e comutadores <= 1 kV", "AI", "AJ", None, "kg"),
+    Product("853690", "Outros aparelhos para interrupcao, seccionamento, protecao e ligacao <= 1 kV", "AK", "AL", None, "kg"),
+    Product("853710", "Quadros e paineis para tensao <= 1 kV", "AM", "AN", None, "kg"),
+    Product("853720", "Quadros e paineis para tensao > 1 kV", "AO", "AP", None, "unit", ("85372090",)),
 )
 
 
@@ -240,8 +242,8 @@ def fetch_prices(product: Product, first_year: int) -> dict[tuple[int, int], flo
 
 
 def read_column(sheet, column: str, last_row: int) -> list:
-    values = sheet.range(f"{column}{FIRST_DATA_ROW}:{column}{last_row}").value
-    return values if isinstance(values, list) else [values]
+    ci = column_index_from_string(column)
+    return [sheet.cell(r, ci).value for r in range(FIRST_DATA_ROW, last_row + 1)]
 
 
 def find_missing_cells(sheet, last_row: int):
@@ -250,7 +252,7 @@ def find_missing_cells(sheet, last_row: int):
         product.code: {
             "total": read_column(sheet, product.total_col, last_row),
             "sc": read_column(sheet, product.sc_col, last_row),
-            "price": read_column(sheet, product.price_col, last_row),
+            "price": read_column(sheet, product.price_col, last_row) if product.price_col else [],
         }
         for product in PRODUCTS
     }
@@ -264,6 +266,8 @@ def find_missing_cells(sheet, last_row: int):
         rows_by_month[month] = (FIRST_DATA_ROW + index, index)
         for product in PRODUCTS:
             for key in MISSING_KEYS:
+                if key == "price" and not product.price_col:
+                    continue  # produto sem coluna de preco na planilha
                 if not has_value(current[product.code][key][index]):
                     missing[product.code][key].add(month)
 
@@ -271,11 +275,17 @@ def find_missing_cells(sheet, last_row: int):
 
 
 def process_workbook(workbook, dry_run: bool) -> dict:
-    if SHEET_NAME not in [sheet.name for sheet in workbook.sheets]:
+    if SHEET_NAME not in workbook.sheetnames:
         raise RuntimeError(f"Aba {SHEET_NAME!r} nao encontrada.")
 
-    sheet = workbook.sheets[SHEET_NAME]
-    last_row = sheet.used_range.last_cell.row
+    sheet = workbook[SHEET_NAME]
+    # O fim real dos dados e' o fim do grid de datas da coluna B
+    # (max_row pode vir inflado com linhas vazias) — varre ate a primeira lacuna.
+    last_row = FIRST_DATA_ROW
+    for r in range(FIRST_DATA_ROW, sheet.max_row + 1):
+        if sheet.cell(r, 2).value is None:
+            break
+        last_row = r
     rows_by_month, missing = find_missing_cells(sheet, last_row)
 
     products_to_fetch = [
@@ -337,7 +347,7 @@ def process_workbook(workbook, dry_run: bool) -> dict:
 
             if not dry_run:
                 for column, value, _ in pending:
-                    sheet.range(f"{column}{row_number}").value = value
+                    sheet.cell(row_number, column_index_from_string(column)).value = value
 
             written += len(pending)
             updated_months.add(month)
@@ -352,22 +362,11 @@ def process_workbook(workbook, dry_run: bool) -> dict:
 
 
 def open_workbook(read_only: bool):
-    target = str(WORKBOOK_PATH).lower()
-    for app in xw.apps:
-        for book in app.books:
-            try:
-                if str(Path(book.fullname)).lower() == target:
-                    log("Usando a planilha que ja esta aberta no Excel.")
-                    return app, book, False
-            except Exception:
-                continue
-
-    app = xw.App(visible=False, add_book=False)
-    app.api.AskToUpdateLinks = False
-    app.display_alerts = False
-    app.screen_updating = False
-    workbook = app.books.open(str(WORKBOOK_PATH), update_links=0, read_only=read_only)
-    return app, workbook, True
+    """Baixa a planilha do Google Drive e abre com openpyxl."""
+    file_id = drive_io.find_file_id(WORKBOOK_NAME)
+    path = drive_io.download_to_temp(file_id)
+    workbook = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
+    return file_id, path, workbook
 
 
 def main() -> None:
@@ -377,26 +376,19 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Consulta e mostra as alteracoes sem gravar.")
     args = parser.parse_args()
 
-    if not WORKBOOK_PATH.exists():
-        raise FileNotFoundError(f"Planilha nao encontrada: {WORKBOOK_PATH}")
-
-    app = None
     workbook = None
-    opened_by_script = False
     try:
-        app, workbook, opened_by_script = open_workbook(args.dry_run)
+        file_id, path, workbook = open_workbook(args.dry_run)
         result = process_workbook(workbook, args.dry_run)
         if result["written"] and not args.dry_run:
-            workbook.api.SaveLinkValues = True
-            workbook.save()
+            workbook.save(path)
+            drive_io.update_file(file_id, path)   # sobe de volta pro Drive
             log("Arquivo salvo.")
         elif not result["written"]:
             log("Nenhuma celula alterada.")
     finally:
-        if workbook is not None and opened_by_script:
+        if workbook is not None:
             workbook.close()
-        if app is not None and opened_by_script:
-            app.quit()
 
     mode = "DRY-RUN" if args.dry_run else "CONCLUIDO"
     print(f"\n[{mode}] {len(result['months'])} mes(es) atualizado(s), {result['written']} valor(es) preenchido(s).")

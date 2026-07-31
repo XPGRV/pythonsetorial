@@ -34,3 +34,5 @@ jobs:
           check "https://servicodados.ibge.gov.br"       "IBGE servicodados"
           check "https://apps.fas.usda.gov"              "USDA GATS (EUA)"
           check "https://quickstats.nass.usda.gov"       "USDA NASS (EUA)"
+          check "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PCU335311335311" "FRED CSV (WEG PPI)"
+          check "https://api.stlouisfed.org"             "FRED API (alternativa)"
