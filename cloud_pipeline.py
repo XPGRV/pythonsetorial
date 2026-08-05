@@ -11,6 +11,9 @@ class Step:
     name: str
     script: str
     args: tuple[str, ...] = ()
+    # optional=True: se a etapa falhar, o pipeline segue e o upload final
+    # ainda acontece (util p/ fontes instaveis, ex. FRED atras de WAF).
+    optional: bool = False
 
 def _summary(text: str) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -62,16 +65,24 @@ def run(name: str, workbook: str, steps: list[Step]) -> None:
 
             if returncode:
                 _summary(
-                    f"| {_table_text(step.name)} | ❌ Erro | "
+                    f"| {_table_text(step.name)} | "
+                    f"{'⚠️ Falhou' if step.optional else '❌ Erro'} | "
                     f"{_table_text(ultima_linha)} |"
                 )
-                raise RuntimeError(
-                    f"Etapa falhou (exit code {returncode}): {step.script}"
+                if not step.optional:
+                    raise RuntimeError(
+                        f"Etapa falhou (exit code {returncode}): {step.script}"
+                    )
+                print(
+                    f"[aviso] Etapa opcional falhou (exit code {returncode}): "
+                    f"{step.script}. Pipeline continua.",
+                    flush=True,
                 )
-            _summary(
-                f"| {_table_text(step.name)} | ✅ OK | "
-                f"{_table_text(ultima_linha)} |"
-            )
+            else:
+                _summary(
+                    f"| {_table_text(step.name)} | ✅ OK | "
+                    f"{_table_text(ultima_linha)} |"
+                )
             if index < len(steps):
                 time.sleep(2)
         print("\n[Drive] Enviando resultado final do pipeline...", flush=True)

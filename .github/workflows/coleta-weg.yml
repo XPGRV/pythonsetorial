@@ -1,8 +1,9 @@
 name: Coleta WEG
 
-# Roda os coletores do WEG na nuvem, em SEQUENCIA (todos gravam no mesmo
-# "WEG - Setorial.xlsm" no Drive). Roda ANTES do Bloomberg das 22h, que
-# recalcula via F9 as formulas que o openpyxl deixa sem cache.
+# Roda os coletores do WEG na nuvem via pipeline: UM download e UM upload do
+# "WEG - Setorial.xlsm" para as 3 etapas (antes eram 3 de cada). Roda ANTES do
+# Bloomberg das 22h, que recalcula via F9 as formulas que o openpyxl deixa sem
+# cache.
 #
 # Fontes: Comex Stat (SECEX motores/transformadores) e FRED (PPI).
 #
@@ -19,37 +20,20 @@ concurrency:
 
 jobs:
   coleta:
+    # Impede que uma fonte externa presa segure o runner indefinidamente.
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     env:
       GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
       GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Instala dependencias
         run: pip install -r requirements.txt
-
-      - name: Resumo (cabecalho)
-        run: echo "## Coleta WEG — $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: SECEX Transformadores
-        run: |
-          python WEG/update_secex_transformadores.py | tee /tmp/o.txt
-          echo "- **SECEX transformadores:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: SECEX Motores
-        run: |
-          python WEG/update_secex_motores.py | tee /tmp/o.txt
-          echo "- **SECEX motores:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
-
-      # FRED as vezes bloqueia requisicoes automatizadas (WAF/Akamai). Se falhar,
-      # nao derruba o workflow: os dados SECEX acima ja foram gravados.
-      - name: PPI Transformadores (FRED)
-        continue-on-error: true
-        run: |
-          python WEG/atualiza_transformadores.py | tee /tmp/o.txt
-          echo "- **PPI FRED:** $(tail -1 /tmp/o.txt)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Resumo
+        run: echo "## Coleta WEG - $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pipeline WEG
+        run: python WEG/atualizar_weg_pipeline.py | tee /tmp/o.txt
