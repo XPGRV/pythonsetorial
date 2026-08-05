@@ -48,7 +48,11 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 MIME_XLSM = "application/vnd.ms-excel.sheet.macroEnabled.12"
 DRIVE_TIMEOUT_S = int(os.environ.get("DRIVE_TIMEOUT_S", "120"))
 DRIVE_NUM_RETRIES = int(os.environ.get("DRIVE_NUM_RETRIES", "5"))
-DRIVE_UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024
+# Chunk menor que a planilha (~4 MB) de proposito: com um unico chunk o upload
+# fica mudo do inicio ao fim e, se a conexao cair no meio, o arquivo INTEIRO e'
+# reenviado. Em pedacos de 1 MB o progresso aparece no log e a retomada refaz
+# apenas o pedaco que falhou.
+DRIVE_UPLOAD_CHUNK_SIZE = 1024 * 1024
 SHARED_PATH_ENV = "DRIVE_IO_SHARED_PATH"
 SHARED_FILE_ID_ENV = "DRIVE_IO_SHARED_FILE_ID"
 SHARED_NAME_ENV = "DRIVE_IO_SHARED_NAME"
@@ -311,14 +315,29 @@ def update_file(file_id: str, local_path: str, mime: str = MIME_XLSM) -> dict:
         )
     )
 
+    tamanho_mb = os.path.getsize(local_path) / (1024 * 1024)
+    print(
+        f"[Drive] Enviando {tamanho_mb:.1f} MB em pedacos de "
+        f"{DRIVE_UPLOAD_CHUNK_SIZE // (1024 * 1024)} MB...",
+        flush=True,
+    )
+
     res = None
     ultimo_progresso = -1
     while res is None:
+        t_chunk = time.monotonic()
         status, res = request.next_chunk(num_retries=DRIVE_NUM_RETRIES)
+        # Log por pedaco (e nao so' quando a % muda): num upload lento e' isso
+        # que diferencia "travado" de "andando devagar".
         if status:
             progresso = int(status.progress() * 100)
             if progresso != ultimo_progresso:
-                print(f"[Drive] Upload {progresso}%.", flush=True)
+                print(
+                    f"[Drive] Upload {progresso}% "
+                    f"({time.monotonic() - t_chunk:.1f}s neste pedaco, "
+                    f"{time.monotonic() - t0:.1f}s no total).",
+                    flush=True,
+                )
                 ultimo_progresso = progresso
 
     print(f"[Drive] Upload concluido em {time.monotonic() - t0:.1f}s.", flush=True)
