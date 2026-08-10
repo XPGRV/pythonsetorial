@@ -93,10 +93,15 @@ def drive():
     if _drive_client is None:
         creds = _credentials()
         if httplib2 is not None and google_auth_httplib2 is not None:
-            http = google_auth_httplib2.AuthorizedHttp(
-                creds,
-                http=httplib2.Http(timeout=DRIVE_TIMEOUT_S),
-            )
+            http_base = httplib2.Http(timeout=DRIVE_TIMEOUT_S)
+            # Upload resumable: o Google responde 308 (Resume Incomplete) a cada
+            # pedaco, com header `Range` e SEM `Location`. O httplib2 lista 308
+            # como redirect e aborta com RedirectMissingLocation antes que o
+            # googleapiclient — que sabe tratar 308 — veja a resposta. Tirar 308
+            # de redirect_codes devolve o 308 para a camada de cima.
+            # So' aparece em upload multi-chunk (arquivo maior que o chunk).
+            http_base.redirect_codes = httplib2.REDIRECT_CODES - {308}
+            http = google_auth_httplib2.AuthorizedHttp(creds, http=http_base)
             _drive_client = build(
                 "drive",
                 "v3",
@@ -228,36 +233,31 @@ def _fix_single_cell_array_formulas(path: str) -> None:
     import tempfile
     import zipfile
 
-    cell_re = re.compile(
-        r'(<c\b[^>]*\br="([^"]+)"[^>]*>.*?</c>)',
-        flags=re.DOTALL,
-    )
-    formula_re = re.compile(r"<f\b([^>]*)>", flags=re.DOTALL)
+    # Opera direto na tag <f ...>, sem casar a celula <c> em volta: `[^>]*` nao
+    # atravessa tags, entao o custo e' linear. A versao anterior casava
+    # `<c ...>.*?</c>` com DOTALL e travava em planilhas salvas pelo openpyxl,
+    # que grava celula vazia auto-fechada (<c r="A1" s="5"/>): sem `</c>`
+    # proprio, cada uma disparava uma varredura do documento inteiro.
+    #
+    # Dispensar o contexto da celula nao muda o resultado: a regra antiga era
+    # "remove se ref == referencia da celula OU se ref e' uma celula unica", e
+    # a referencia da celula e' sempre uma celula unica — logo a primeira
+    # condicao ja' esta contida na segunda.
+    formula_re = re.compile(r"<f\b([^>]*)>")
+    ref_unica_re = re.compile(r"^\$?[A-Za-z]{1,3}\$?\d+$")
 
-    def normalize_cell(match: re.Match) -> str:
-        cell_xml = match.group(1)
-        cell_ref = match.group(2)
-        f_match = formula_re.search(cell_xml)
-        if not f_match:
-            return cell_xml
-
-        attrs = f_match.group(1)
-        if not re.search(r'\bt="array"', attrs):
-            return cell_xml
+    def normalize_formula(match: re.Match) -> str:
+        attrs = match.group(1)
+        if 't="array"' not in attrs:
+            return match.group(0)
 
         ref_match = re.search(r'\bref="([^"]+)"', attrs)
-        if not ref_match:
-            return cell_xml
-
-        formula_ref = ref_match.group(1)
-        ref_unica_celula = re.match(r"^\$?[A-Za-z]{1,3}\$?\d+$", formula_ref)
-        if formula_ref != cell_ref and not ref_unica_celula:
-            return cell_xml
+        if not ref_match or not ref_unica_re.match(ref_match.group(1)):
+            return match.group(0)
 
         attrs = re.sub(r'\s+t="array"', "", attrs)
         attrs = re.sub(r'\s+ref="[^"]+"', "", attrs)
-        novo_f = f"<f{attrs}>"
-        return cell_xml[: f_match.start()] + novo_f + cell_xml[f_match.end() :]
+        return f"<f{attrs}>"
 
     mudou = False
     with zipfile.ZipFile(path, "r") as zin:
@@ -268,7 +268,8 @@ def _fix_single_cell_array_formulas(path: str) -> None:
                 data = zin.read(item.filename)
                 if re.match(r"xl/worksheets/sheet\d+\.xml$", item.filename):
                     txt = data.decode("utf-8")
-                    novo = cell_re.sub(normalize_cell, txt)
+                    # Sem formula matricial na aba nao ha' o que normalizar.
+                    novo = formula_re.sub(normalize_formula, txt) if 't="array"' in txt else txt
                     if novo != txt:
                         mudou = True
                         data = novo.encode("utf-8")
