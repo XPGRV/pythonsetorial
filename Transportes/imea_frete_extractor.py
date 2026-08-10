@@ -243,6 +243,26 @@ def copy_row_format(ws, src_row, dst_row, n_cols=6):
         dst.protection = copy.copy(src.protection)
 
 
+def close_workbook(wb):
+    """Fecha o workbook e o vba_archive.
+
+    Com keep_vba=True o openpyxl abre um ZipFile (modo 'a', sobre um BytesIO
+    com o .xlsm inteiro) em wb.vba_archive e nunca o fecha — wb.close() so
+    trata wb._archive, que nem existe no modo normal. No shutdown do
+    interpretador o buffer as vezes e finalizado antes do ZipFile, e o
+    ZipFile.__del__ estoura "I/O operation on closed file" ao tentar seek.
+    Fechar aqui e inofensivo: o fp e memoria, nao o arquivo em disco (md5 do
+    .xlsm nao muda), e deixa fp=None, tornando o __del__ posterior um no-op.
+    """
+    wb.close()
+    archive = getattr(wb, "vba_archive", None)
+    if archive is not None and getattr(archive, "fp", None) is not None:
+        try:
+            archive.close()
+        except Exception:  # nunca deixar a limpeza mascarar o erro real
+            log.debug("Falha ao fechar vba_archive.", exc_info=True)
+
+
 def resolve_sheet_name(wb):
     """Acha a aba de fretes: nome exato, senao a primeira que casa por palavra."""
     if SHEET_NAME in wb.sheetnames:
@@ -375,7 +395,7 @@ def update_workbook(df, dry_run=False):
             print(entry)
         return {"new_rows": new_rows, "updated_values": updated_values}
     finally:
-        wb.close()
+        close_workbook(wb)
 
 
 # ---------------------------------------------------------------------------
