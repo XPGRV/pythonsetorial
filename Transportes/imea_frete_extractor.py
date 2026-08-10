@@ -27,6 +27,7 @@ import ssl
 import copy
 import argparse
 import logging
+import unicodedata
 import requests
 import urllib3
 import pandas as pd
@@ -105,7 +106,11 @@ WORKBOOK_PATH = Path(
     r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z"
     r"\Arquivos\Setorial - Database\Transportes.xlsm"
 )
-SHEET_NAME = "Preço Fretes"
+# Nome preferencial da aba. Se nao existir exatamente, cai para a primeira aba
+# que contenha "frete" (o titulo ja mudou de "Preço Fretes" para
+# "Preço Fretes - IMEA" uma vez; a dashboard tambem resolve a aba por palavra).
+SHEET_NAME = "Preço Fretes - IMEA"
+SHEET_KEYWORDS = ("frete",)
 FIRST_DATA_ROW = 4
 
 COL_QUARTER = 1
@@ -238,6 +243,28 @@ def copy_row_format(ws, src_row, dst_row, n_cols=6):
         dst.protection = copy.copy(src.protection)
 
 
+def resolve_sheet_name(wb):
+    """Acha a aba de fretes: nome exato, senao a primeira que casa por palavra."""
+    if SHEET_NAME in wb.sheetnames:
+        return SHEET_NAME
+
+    def normalize(name):
+        return "".join(
+            ch for ch in unicodedata.normalize("NFD", name.lower())
+            if unicodedata.category(ch) != "Mn"
+        )
+
+    for name in wb.sheetnames:
+        norm = normalize(name)
+        if all(word in norm for word in SHEET_KEYWORDS):
+            log.warning(f"Aba {SHEET_NAME!r} nao existe; usando {name!r}.")
+            return name
+
+    raise RuntimeError(
+        f"Aba {SHEET_NAME!r} nao encontrada. Abas: {', '.join(wb.sheetnames)}"
+    )
+
+
 def as_date(value):
     if isinstance(value, datetime):
         return value.date()
@@ -278,11 +305,8 @@ def update_workbook(df, dry_run=False):
 
     wb = openpyxl.load_workbook(WORKBOOK_PATH, keep_vba=True, data_only=False)
     try:
-        if SHEET_NAME not in wb.sheetnames:
-            raise RuntimeError(
-                f"Aba {SHEET_NAME!r} nao encontrada. Abas: {', '.join(wb.sheetnames)}"
-            )
-        ws = wb[SHEET_NAME]
+        sheet_name = resolve_sheet_name(wb)
+        ws = wb[sheet_name]
         original_max_row = ws.max_row
 
         rows_by_week = {}
@@ -344,7 +368,7 @@ def update_workbook(df, dry_run=False):
 
         prefix = "[DRY-RUN] " if dry_run else ""
         print(
-            f"{prefix}Planilha: {WORKBOOK_PATH.name} | Aba: {SHEET_NAME} | "
+            f"{prefix}Planilha: {WORKBOOK_PATH.name} | Aba: {sheet_name} | "
             f"{new_rows} linha(s) nova(s) | {updated_values} valor(es) gravado(s)/atualizado(s)."
         )
         for entry in log_rows:
