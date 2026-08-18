@@ -37,5 +37,8 @@ jobs:
         run: pip install -r requirements.txt
       - name: Resumo
         run: echo "## Coleta WEG - $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
+      # Sem `| tee`: o shell padrao do Actions e `bash -e` SEM pipefail,
+      # entao o status do pipe seria o do tee (sempre 0) e a falha do
+      # coletor passaria como sucesso. O log do job ja mostra tudo.
       - name: Pipeline WEG
-        run: python WEG/atualizar_weg_pipeline.py | tee /tmp/o.txt
+        run: python WEG/atualizar_weg_pipeline.py
