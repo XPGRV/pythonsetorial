@@ -1,0 +1,45 @@
+name: Coleta Transportes
+
+# Roda os coletores do Transportes na nuvem via pipeline: UM download e UM
+# upload do "Transportes.xlsm" para as 2 etapas.
+#
+# Fontes: Comex Stat (SECEX de soja e milho) e IMEA (frete de graos).
+#
+# Secrets: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
+#          IMEA_USERNAME, IMEA_PASSWORD
+
+# Sem cron: quem manda no horario e o esteira.py, no PC do Bloomberg.
+# Este workflow fica disponivel so para disparo manual/depuracao -- a rodada
+# diaria passa pelo "Coleta completa" (coleta-tudo.yml).
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: coleta-transportes
+  cancel-in-progress: false
+
+jobs:
+  coleta:
+    # Impede que uma fonte externa presa segure o runner indefinidamente.
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+      IMEA_USERNAME: ${{ secrets.IMEA_USERNAME }}
+      IMEA_PASSWORD: ${{ secrets.IMEA_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+      - name: Resumo
+        run: echo "## Coleta Transportes - $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
+      # Sem `| tee`: o shell padrao do Actions e `bash -e` SEM pipefail, entao o
+      # status do pipe e o do tee (sempre 0) e a falha do coletor passaria como
+      # sucesso. O pipeline ja imprime tudo no log do job.
+      - name: Pipeline Transportes
+        run: python Transportes/atualizar_transportes_pipeline.py
