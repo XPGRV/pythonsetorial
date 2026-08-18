@@ -9,9 +9,11 @@ name: Coleta WEG
 #
 # Secrets: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
 
+# Sem cron: quem manda no horario e o esteira.py, no PC do Bloomberg.
+# Este workflow fica disponivel so para disparo manual/depuracao -- a rodada
+# diaria passa pelo "Coleta completa" (coleta-tudo.yml).
+
 on:
-  schedule:
-    - cron: '0 23 * * 1-5'   # dias uteis 23h UTC = 20h BRT
   workflow_dispatch:
 
 concurrency:

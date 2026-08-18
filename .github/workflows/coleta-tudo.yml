@@ -1,0 +1,146 @@
+name: Coleta completa
+
+# Roda os cinco coletores num run so, na ordem certa.
+#
+# Nao tem cron de proposito: quem manda no horario e o esteira.py, que roda no
+# PC do Bloomberg. A razao e que os coletores gravam com openpyxl, que preserva
+# as formulas mas descarta o valor em cache delas -- e quem repoe esse cache e o
+# passe do Excel, que so existe naquela maquina. Coletar sem ter o Bloomberg
+# vivo logo em seguida deixa as planilhas ilegiveis para o dashboard.
+#
+# A ordem BeefBR -> FrangoBR e obrigatoria: FrangoBR/copiar_secex.py le a aba
+# SECEX do BeefBR.xlsm ja atualizado. WEG e independente e roda em paralelo.
+#
+# Cada etapa usa `if: always()` para a fila nao parar na primeira falha (o
+# comportamento antigo da cadeia por workflow_run), mas agora uma falha derruba
+# a conclusao do run inteiro em vez de sumir em quatro runs verdes separados.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: coleta-planilhas
+  cancel-in-progress: false
+
+env:
+  PY: '3.12'
+
+jobs:
+
+  beefbr:
+    name: BeefBR
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY }}
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+      - name: Pipeline BeefBR
+        run: python BeefBR/atualizar_beefbr_pipeline.py
+
+  frangobr:
+    name: FrangoBR
+    needs: beefbr
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY }}
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+      - name: Avisa se o BeefBR falhou
+        if: needs.beefbr.result != 'success'
+        run: |
+          echo "::warning::BeefBR terminou como '${{ needs.beefbr.result }}'. O copiar_secex.py vai usar a aba SECEX da rodada anterior."
+      - name: Pipeline FrangoBR
+        run: python FrangoBR/atualizar_frangobr_pipeline.py
+
+  beefus:
+    name: BeefUS
+    needs: frangobr
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+      NASS_API_KEY: ${{ secrets.NASS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY }}
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+      - name: Pipeline BeefUS
+        run: python BeefUS/atualizar_beefus_pipeline.py
+
+  frangous:
+    name: FrangoUS
+    needs: beefus
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+      NASS_API_KEY: ${{ secrets.NASS_API_KEY }}
+      MARS_API_KEY: ${{ secrets.MARS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY }}
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+      - name: Pipeline FrangoUS
+        run: python FrangoUS/atualizar_frangous_pipeline.py
+
+  weg:
+    name: WEG
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY }}
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+      - name: Pipeline WEG
+        run: python WEG/atualizar_weg_pipeline.py
+
+  resumo:
+    name: Resumo
+    needs: [beefbr, frangobr, beefus, frangous, weg]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Consolida o resultado
+        run: |
+          {
+            echo "## Coleta completa - $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "| Planilha | Resultado |"
+            echo "|---|---|"
+            echo "| BeefBR | ${{ needs.beefbr.result }} |"
+            echo "| FrangoBR | ${{ needs.frangobr.result }} |"
+            echo "| BeefUS | ${{ needs.beefus.result }} |"
+            echo "| FrangoUS | ${{ needs.frangous.result }} |"
+            echo "| WEG | ${{ needs.weg.result }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

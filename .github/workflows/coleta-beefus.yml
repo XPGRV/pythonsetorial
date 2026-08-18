@@ -1,9 +1,11 @@
 name: Coleta BeefUS
+# Sem cron: quem manda no horario e o esteira.py, no PC do Bloomberg.
+# Este workflow fica disponivel so para disparo manual/depuracao -- a rodada
+# diaria passa pelo "Coleta completa" (coleta-tudo.yml).
+
 on:
-  workflow_run:
-    workflows: ["Coleta FrangoBR"]
-    types: [completed]
   workflow_dispatch:
+
 concurrency:
   group: coleta-planilhas
   cancel-in-progress: false

@@ -1,8 +1,10 @@
 name: Coleta BeefBR
 
+# Sem cron: quem manda no horario e o esteira.py, no PC do Bloomberg.
+# Este workflow fica disponivel so para disparo manual/depuracao -- a rodada
+# diaria passa pelo "Coleta completa" (coleta-tudo.yml).
+
 on:
-  schedule:
-    - cron: '0 23 * * 1-5'
   workflow_dispatch:
 
 concurrency:
