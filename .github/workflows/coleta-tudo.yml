@@ -8,8 +8,23 @@ name: Coleta completa
 # passe do Excel, que so existe naquela maquina. Coletar sem ter o Bloomberg
 # vivo logo em seguida deixa as planilhas ilegiveis para o dashboard.
 #
-# A ordem BeefBR -> FrangoBR e obrigatoria: FrangoBR/copiar_secex.py le a aba
-# SECEX do BeefBR.xlsm ja atualizado. WEG e independente e roda em paralelo.
+# Tres trilhas em paralelo. O caminho critico deixa de ser a soma e passa a ser
+# a maior trilha: ~55 min de pior caso, contra ~100 min quando tudo era uma fila
+# so.
+#
+#   BeefBR --> FrangoBR     dependencia REAL de dados
+#   BeefUS --> FrangoUS     sequencial por causa da chave da USDA (ver abaixo)
+#   WEG                     independente
+#
+# BeefBR -> FrangoBR e obrigatorio: o FrangoBR/copiar_secex.py copia a aba SECEX
+# do BeefBR.xlsm, e o atualiza_px_bovina_balanca.py --cloud-frangobr escreve no
+# FrangoBR formulas que referenciam [BeefBR.xlsm]SECEX!.
+#
+# BeefUS -> FrangoUS NAO e dependencia de dados: os dois mexem so na propria
+# planilha. E sequencial de proposito porque dividem a mesma NASS_API_KEY no
+# USDA Quickstats e batem no mesmo ers.usda -- rodar em paralelo dobraria a
+# concorrencia na mesma chave, e o Quickstats limita taxa. Se um dia a chave
+# deixar de ser gargalo, basta tirar o `needs: beefus` do job frangous.
 #
 # Cada etapa usa `if: always()` para a fila nao parar na primeira falha (o
 # comportamento antigo da cadeia por workflow_run), mas agora uma falha derruba
@@ -69,8 +84,6 @@ jobs:
 
   beefus:
     name: BeefUS
-    needs: frangobr
-    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
