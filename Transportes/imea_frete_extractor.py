@@ -24,6 +24,7 @@ Dependencias:
 
 import os
 import ssl
+import sys
 import copy
 import argparse
 import logging
@@ -36,6 +37,9 @@ from pathlib import Path
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
 
 # Carrega sempre o .env ao lado deste script. O fallback evita depender de
 # python-dotenv na maquina que executa o agendamento.
@@ -102,10 +106,7 @@ ROTAS = [
 # Nesse caso, use JANELA = "semanal" para nao estourar o teto de 10 registros por requisicao.
 MODO_TODAS_ROTAS = False
 
-WORKBOOK_PATH = Path(
-    r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z"
-    r"\Arquivos\Setorial - Database\Transportes.xlsm"
-)
+XLSX_NAME = "Transportes.xlsm"
 # Nome preferencial da aba. Se nao existir exatamente, cai para a primeira aba
 # que contenha "frete" (o titulo ja mudou de "Preço Fretes" para
 # "Preço Fretes - IMEA" uma vez; a dashboard tambem resolve a aba por palavra).
@@ -316,14 +317,16 @@ def records_by_week(df):
 
 
 def update_workbook(df, dry_run=False):
-    if not WORKBOOK_PATH.exists():
-        raise FileNotFoundError(f"Planilha nao encontrada: {WORKBOOK_PATH}")
-
     weekly = records_by_week(df)
     if not weekly:
         raise RuntimeError("Nenhum registro valido para gravar na planilha.")
 
-    wb = openpyxl.load_workbook(WORKBOOK_PATH, keep_vba=True, data_only=False)
+    # Sob o cloud_pipeline isto reaproveita o download unico da planilha; rodando
+    # sozinho, baixa e sobe de verdade. Nos dois casos, sem depender do G:.
+    file_id = drive_io.find_file_id(XLSX_NAME)
+    caminho = drive_io.download_to_temp(file_id)
+
+    wb = openpyxl.load_workbook(caminho, keep_vba=True, data_only=False)
     try:
         sheet_name = resolve_sheet_name(wb)
         ws = wb[sheet_name]
@@ -384,11 +387,12 @@ def update_workbook(df, dry_run=False):
                 )
 
         if not dry_run and (new_rows or updated_values):
-            wb.save(WORKBOOK_PATH)
+            wb.save(caminho)
+            drive_io.update_file(file_id, caminho)
 
         prefix = "[DRY-RUN] " if dry_run else ""
         print(
-            f"{prefix}Planilha: {WORKBOOK_PATH.name} | Aba: {sheet_name} | "
+            f"{prefix}Planilha: {XLSX_NAME} | Aba: {sheet_name} | "
             f"{new_rows} linha(s) nova(s) | {updated_values} valor(es) gravado(s)/atualizado(s)."
         )
         for entry in log_rows:

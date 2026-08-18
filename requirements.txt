@@ -7,3 +7,5 @@ openpyxl
 requests
 pandas
 beautifulsoup4
+# Usado pelo coletor de frete do IMEA (vem junto do pandas, mas explicito e melhor).
+python-dateutil

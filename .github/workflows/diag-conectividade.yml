@@ -29,6 +29,8 @@ jobs:
           check "https://dados.agricultura.gov.br"       "MAPA / SIF (abates)"
           check "https://apisidra.ibge.gov.br"           "IBGE SIDRA"
           check "https://api-comexstat.mdic.gov.br"      "Comex Stat (SECEX)"
+          check "https://api1.imea.com.br"               "IMEA API (frete de graos)"
+          check "https://portal.imea.com.br"             "IMEA portal"
           check "https://api.bcb.gov.br"                 "Banco Central"
           check "https://balanca.economia.gov.br"        "MDIC Balanca"
           check "https://servicodados.ibge.gov.br"       "IBGE servicodados"

@@ -15,6 +15,7 @@ name: Coleta completa
 #   BeefBR --> FrangoBR     dependencia REAL de dados
 #   BeefUS --> FrangoUS     sequencial por causa da chave da USDA (ver abaixo)
 #   WEG                     independente
+#   Transportes             independente
 #
 # BeefBR -> FrangoBR e obrigatorio: o FrangoBR/copiar_secex.py copia a aba SECEX
 # do BeefBR.xlsm, e o atualiza_px_bovina_balanca.py --cloud-frangobr escreve no
@@ -138,9 +139,28 @@ jobs:
       - name: Pipeline WEG
         run: python WEG/atualizar_weg_pipeline.py
 
+  transportes:
+    name: Transportes
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+      IMEA_USERNAME: ${{ secrets.IMEA_USERNAME }}
+      IMEA_PASSWORD: ${{ secrets.IMEA_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY }}
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+      - name: Pipeline Transportes
+        run: python Transportes/atualizar_transportes_pipeline.py
+
   resumo:
     name: Resumo
-    needs: [beefbr, frangobr, beefus, frangous, weg]
+    needs: [beefbr, frangobr, beefus, frangous, weg, transportes]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -156,4 +176,5 @@ jobs:
             echo "| BeefUS | ${{ needs.beefus.result }} |"
             echo "| FrangoUS | ${{ needs.frangous.result }} |"
             echo "| WEG | ${{ needs.weg.result }} |"
+            echo "| Transportes | ${{ needs.transportes.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"

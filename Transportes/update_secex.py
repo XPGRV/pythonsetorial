@@ -25,7 +25,7 @@ Uso:
   python update_secex.py --dry-run
 
 Dependencias:
-  pip install requests xlwings
+  pip install requests openpyxl
   Requer Microsoft Excel instalado.
 """
 
@@ -38,7 +38,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 import requests
-import xlwings as xw
+import openpyxl
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
 
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -47,10 +50,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 # ---------------------------------------------------------------------------
 # Configuracao
 # ---------------------------------------------------------------------------
-WORKBOOK_PATH = Path(
-    r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z"
-    r"\Arquivos\Setorial - Database\Transportes.xlsm"
-)
+XLSX_NAME = "Transportes.xlsm"
 SHEET_NAME = "SECEX"
 FIRST_DATA_ROW = 3
 
@@ -225,15 +225,20 @@ def fetch_products(first_year: int) -> dict:
 # Excel
 # ---------------------------------------------------------------------------
 def process_workbook(workbook, dry_run: bool) -> dict:
-    if SHEET_NAME not in [sheet.name for sheet in workbook.sheets]:
+    if SHEET_NAME not in workbook.sheetnames:
         raise RuntimeError(f"Aba {SHEET_NAME!r} nao encontrada.")
 
-    sheet = workbook.sheets[SHEET_NAME]
-    last_row = sheet.used_range.last_cell.row
+    sheet = workbook[SHEET_NAME]
+    last_row = sheet.max_row
 
     def col(column):
-        values = sheet.range(f"{column}{FIRST_DATA_ROW}:{column}{last_row}").value
-        return values if isinstance(values, list) else [values]
+        # B, D, E, F e G sao valor puro (data e numero), sem formula -- conferido
+        # na planilha. Por isso ler com data_only=False devolve o mesmo que o
+        # xlwings devolvia ja calculado.
+        return [
+            sheet[f"{column}{row}"].value
+            for row in range(FIRST_DATA_ROW, last_row + 1)
+        ]
 
     month_values = col(COL_MONTH)
     current = {c: col(c) for c in (COL_SOY, COL_SOY_MT, COL_CORN, COL_CORN_MT)}
@@ -294,7 +299,7 @@ def process_workbook(workbook, dry_run: bool) -> dict:
 
         if not dry_run:
             for column, value, _ in changes:
-                sheet.range(f"{column}{row_number}").value = value
+                sheet[f"{column}{row_number}"] = value
 
         written += len(changes)
         updated_months.append(month)
@@ -322,29 +327,21 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not WORKBOOK_PATH.exists():
-        raise FileNotFoundError(f"Planilha nao encontrada: {WORKBOOK_PATH}")
-
-    app = xw.App(visible=False, add_book=False)
+    # Sob o cloud_pipeline isto reaproveita o download unico da planilha; rodando
+    # sozinho, baixa e sobe de verdade. Nos dois casos, sem Excel instalado.
+    file_id = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(file_id)
+    workbook = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
     try:
-        app.api.AskToUpdateLinks = False
-        app.display_alerts = False
-        app.screen_updating = False
-        workbook = app.books.open(
-            str(WORKBOOK_PATH), update_links=0, read_only=args.dry_run
-        )
-        try:
-            result = process_workbook(workbook, args.dry_run)
-            if result["written"] and not args.dry_run:
-                workbook.api.SaveLinkValues = True
-                workbook.save()
-                log("Arquivo salvo.")
-            elif not result["written"]:
-                log("Nenhuma celula alterada.")
-        finally:
-            workbook.close()
+        result = process_workbook(workbook, args.dry_run)
+        if result["written"] and not args.dry_run:
+            workbook.save(path)
+            drive_io.update_file(file_id, path)
+            log("Arquivo salvo.")
+        elif not result["written"]:
+            log("Nenhuma celula alterada.")
     finally:
-        app.quit()
+        workbook.close()
 
     mode = "DRY-RUN" if args.dry_run else "CONCLUIDO"
     print(
