@@ -24,6 +24,11 @@ def _summary(text: str) -> None:
 def _table_text(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ").strip()
 
+
+def _annotation_text(value: str) -> str:
+    """Uma linha so: quebra de linha encerraria a anotacao no meio."""
+    return " ".join(value.split())
+
 def run(name: str, workbook: str, steps: list[Step]) -> None:
     root = Path(__file__).resolve().parent
     print(f"\n{'=' * 72}\nPipeline {name}: {len(steps)} etapas\n{'=' * 72}", flush=True)
@@ -73,11 +78,20 @@ def run(name: str, workbook: str, steps: list[Step]) -> None:
                     raise RuntimeError(
                         f"Etapa falhou (exit code {returncode}): {step.script}"
                     )
-                print(
-                    f"[aviso] Etapa opcional falhou (exit code {returncode}): "
-                    f"{step.script}. Pipeline continua.",
-                    flush=True,
+                # Passo opcional falhando deixa o job VERDE, e o aviso ficaria
+                # so na tabela do Resumo -- facil de nunca ver. A validacao do
+                # dashboard tambem nao pega: ela conta pontos das series, e as
+                # linhas historicas continuam la, entao os minimos seguem
+                # satisfeitos mesmo com a fonte parada ha meses. O ::warning::
+                # sobe o aviso para o topo do run no Actions.
+                aviso = _annotation_text(
+                    f"{name}: a etapa opcional '{step.name}' falhou "
+                    f"(exit code {returncode}). O pipeline seguiu e o upload "
+                    f"aconteceu, mas essa fonte NAO atualizou nesta rodada."
                 )
+                if os.environ.get("GITHUB_ACTIONS"):
+                    print(f"::warning title=Coleta {name}::{aviso}", flush=True)
+                print(f"[aviso] {aviso}", flush=True)
             else:
                 _summary(
                     f"| {_table_text(step.name)} | ✅ OK | "
