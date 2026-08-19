@@ -1,6 +1,6 @@
 ﻿"""Atualiza SECEX (EUA) de BeefBR.xlsm pelo USDA GATS, via Drive."""
 from __future__ import annotations
-import datetime as dt,sys
+import datetime as dt,sys,time
 from copy import copy
 from pathlib import Path
 import openpyxl,requests
@@ -28,7 +28,22 @@ def table_data(t):
    try:out[(y,m)]={'p':float(c[11+(m-1)*2].get_text(strip=True).replace(',','')),'q':float(c[12+(m-1)*2].get_text(strip=True).replace(',',''))}
    except ValueError:pass
  return out
+def com_retry(fn,tentativas=3,espera=45):
+ """Repete a raspagem inteira quando o GATS engole a conexao.
+
+ Nao adianta repetir so a requisicao que falhou: a sessao carrega estado
+ (cookies, __VIEWSTATE), entao se uma etapa do meio cai, o caminho todo tem de
+ ser refeito do zero.
+ """
+ for i in range(1,tentativas+1):
+  try:return fn()
+  except requests.exceptions.RequestException as e:
+   if i==tentativas:raise
+   print(f'[GATS] tentativa {i}/{tentativas} falhou ({type(e).__name__}); repetindo em {espera}s.',flush=True)
+   time.sleep(espera)
 def fetch():
+ return com_retry(_fetch)
+def _fetch():
  s=requests.Session();s.headers['User-Agent']='Mozilla/5.0';s.get(BASE+'detectscreen.aspx?action=set&res=1920x1080&d=24&pw=1920',timeout=30)
  home=BeautifulSoup(s.get(BASE+'default.aspx',timeout=30).text,'html.parser');a=home.find('a',string=lambda x:x and 'Standard Query' in x);url=BASE+(a['href'].lstrip('/') if a else 'ExpressQuery1.aspx');s0=BeautifulSoup(s.get(url,timeout=30).text,'html.parser');action=(s0.find('form') or {}).get('action','');post=action if action.startswith('http') else BASE+action.lstrip('/');pre='ctl00$ContentPlaceHolder1$';out={}
  for n,g,p in PRODUCTS:
