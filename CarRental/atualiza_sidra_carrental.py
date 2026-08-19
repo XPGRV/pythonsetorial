@@ -410,10 +410,10 @@ def print_relatorio(r: dict):
             print(f"    ... (+{len(revisoes) - limite} revisoes)")
 
     c = r["contadores"]
-    print(f"\nAutomovel Novo (C):  novas={c['novas_novo']}  revisoes={c['rev_novo']}")
+    print(f"\nAutomovel Novo ({COL_NOVO}):  novas={c['novas_novo']}  revisoes={c['rev_novo']}")
     listar(r["revisoes_novo"])
 
-    print(f"Automovel Usado (D): novas={c['novas_usado']}  revisoes={c['rev_usado']}")
+    print(f"Automovel Usado ({COL_USADO}): novas={c['novas_usado']}  revisoes={c['rev_usado']}")
     listar(r["revisoes_usado"])
 
     if r["ausentes"]:
