@@ -77,8 +77,7 @@ class Product:
 
 
 # A planilha mantem uma unica serie de preco: coluna W (US$/unid) para o
-# produto 850423. A coluna X e' formula de volume (=J*1000/W) e NAO deve ser
-# escrita. Os demais produtos ficam com price_col=None.
+# produto 850423. Os demais produtos ficam com price_col=None.
 PRODUCTS: tuple[Product, ...] = (
     Product("850421", "Transformadores dieletricos liquido <= 650 kVA", {"total": "F", "sc": "G"}, None, "unit", ("85042100",)),
     Product("850422", "Transformadores dieletricos liquido > 650 e <= 10.000 kVA", {"total": "H", "sc": "I"}, None, "unit", ("85042200",)),
@@ -274,6 +273,46 @@ def find_missing_cells(sheet, last_row: int):
     return rows_by_month, missing
 
 
+# Coluna derivada, calculada na planilha e nao pela API: Volume (unid.) =
+# total (mil US$) / preco unitario (US$/unid). Grava-se a FORMULA, nunca o valor
+# resolvido -- assim a celula continua viva no Excel, como as vizinhas.
+#
+# Sem isto a coluna congela: o openpyxl escreve celula e nao propaga formula,
+# entao a cada mes novo o coletor preenche J e W e X fica para tras, um mes por
+# vez, ate alguem notar e arrastar na mao. O dashboard nao le X, entao a
+# validacao nunca reclamaria.
+VOLUME_COL = "X"
+VOLUME_TOTAL_COL = "J"    # total do produto 850423
+VOLUME_PRICE_COL = "W"    # preco unitario do mesmo produto
+VOLUME_FORMULA = "={total}{row}*1000/{preco}{row}"
+
+
+def estender_formula_volume(sheet, last_row: int, dry_run: bool) -> int:
+    """Garante a formula de Volume em toda linha que ja tenha total e preco.
+
+    Varre tudo em vez de so as linhas recem-escritas: assim tambem fecha buracos
+    deixados por execucoes anteriores, sem depender de alguem lembrar.
+    """
+    escritas = 0
+    for row in range(FIRST_DATA_ROW, last_row + 1):
+        total = sheet[f"{VOLUME_TOTAL_COL}{row}"].value
+        preco = sheet[f"{VOLUME_PRICE_COL}{row}"].value
+        # "-" (EMPTY_API_VALUE) e vazio nao rendem divisao: a formula daria
+        # #VALUE! e sujaria a planilha.
+        if not isinstance(total, (int, float)) or not isinstance(preco, (int, float)):
+            continue
+        celula = sheet[f"{VOLUME_COL}{row}"]
+        formula = VOLUME_FORMULA.format(
+            total=VOLUME_TOTAL_COL, preco=VOLUME_PRICE_COL, row=row
+        )
+        if celula.value == formula:
+            continue
+        if not dry_run:
+            celula.value = formula
+        escritas += 1
+    return escritas
+
+
 def process_workbook(workbook, dry_run: bool) -> dict:
     if SHEET_NAME not in workbook.sheetnames:
         raise RuntimeError(f"Aba {SHEET_NAME!r} nao encontrada.")
@@ -288,6 +327,11 @@ def process_workbook(workbook, dry_run: bool) -> dict:
         last_row = r
     rows_by_month, missing = find_missing_cells(sheet, last_row)
 
+    volume_escritas = estender_formula_volume(sheet, last_row, dry_run)
+    if volume_escritas:
+        prefix = "[DRY-RUN] " if dry_run else ""
+        log(f"{prefix}Coluna {VOLUME_COL} (Volume): {volume_escritas} formula(s) estendida(s).")
+
     products_to_fetch = [
         product
         for product in PRODUCTS
@@ -295,9 +339,9 @@ def process_workbook(workbook, dry_run: bool) -> dict:
     ]
     if not products_to_fetch:
         log("Nada a atualizar; colunas SECEX ja estao preenchidas.")
-        return {"months": [], "written": 0}
+        return {"months": [], "written": volume_escritas}
 
-    written = 0
+    written = volume_escritas
     updated_months = set()
 
     for product_index, product in enumerate(products_to_fetch, start=1):
