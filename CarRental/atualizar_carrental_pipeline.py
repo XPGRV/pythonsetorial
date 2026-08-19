@@ -9,6 +9,10 @@ STEPS = [
     # apisidra.ibge.gov.br ja e usado pelo BeefBR e pelo FrangoBR a partir do
     # runner, entao a fonte e confiavel aqui.
     Step("IPCA carros (SIDRA)", "CarRental/atualiza_sidra_carrental.py"),
+    # Precisa vir DEPOIS do coletor: puxa as formulas F..M ate as linhas de
+    # %MoM que ele acabou de gravar. Sem isto o dashboard, que le F, J, L e M,
+    # para de crescer sem erro nenhum aparecer.
+    Step("Consolidador CarRental", "CarRental/atualizar_carrental.py"),
 ]
 
 if __name__ == "__main__":
