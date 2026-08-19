@@ -120,6 +120,20 @@ EPS         = 1e-6   # tolerancia p/ considerar revisao de valor
 # ============================================================
 # HELPERS
 # ============================================================
+PLACEHOLDERS = ("-", "--", "–", "—")
+
+
+def fora_da_serie(v) -> bool:
+    """True quando a celula esta marcada para NAO ser preenchida.
+
+    O traco nao e' "faltando", e' "fora da serie": os indices da planilha so
+    comecam em 12/2001 (linha 28, onde J=100 e K=L=80), e as 23 linhas
+    anteriores sao '-' de ponta a ponta. Preencher esses meses injeta %MoM sem
+    indice correspondente, e o dashboard passa a receber pontos parciais.
+    """
+    return isinstance(v, str) and v.strip() in PLACEHOLDERS
+
+
 def valor_existente(v):
     """Valor ja na planilha como float, ou None se nao for numero.
 
@@ -333,6 +347,12 @@ def processar(wb) -> dict:
             novo_u /= 100
 
         linha_mudou = False
+
+        # Cada serie decide sozinha: uma pode estar fora da serie e a outra nao.
+        if fora_da_serie(bruto_n):
+            novo_n = None
+        if fora_da_serie(bruto_u):
+            novo_u = None
 
         if novo_n is not None:
             if atual_n is None:
