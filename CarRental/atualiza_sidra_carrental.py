@@ -39,6 +39,7 @@ dataset 'rental' para 0/24 pontos -- verificado. Na esteira isso e garantido
 pelo passo 3; rodando o workflow individual, o dado so volta no ciclo seguinte.
 """
 
+import sys
 import time
 import datetime as dt
 from pathlib import Path
@@ -119,6 +120,27 @@ EPS         = 1e-6   # tolerancia p/ considerar revisao de valor
 # ============================================================
 # HELPERS
 # ============================================================
+def valor_existente(v):
+    """Valor ja na planilha como float, ou None se nao for numero.
+
+    As colunas D e E usam '-' como marcador de mes sem dado (23 celulas, nos
+    primeiros anos da serie). Antes isto nao aparecia porque o script lia a
+    coluna C, que e vazia; com o mapeamento corrigido o '-' chega ate aqui e o
+    float() estourava.
+    """
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    texto = str(v).strip()
+    if texto in ("", "-", "--"):
+        return None
+    try:
+        return float(texto.replace(",", "."))
+    except ValueError:
+        return None
+
+
 def row_of(ano: int, mes: int) -> int:
     """Linha 5 = jan/2000."""
     return ROW_BASE + (ano - ANO_BASE) * 12 + (mes - 1)
@@ -296,8 +318,12 @@ def processar(wb) -> dict:
                 f"encontrado {data_b.month:02d}/{data_b.year}"
             )
 
-        atual_n = novo_vals[idx]  if idx < len(novo_vals)  else None
-        atual_u = usado_vals[idx] if idx < len(usado_vals) else None
+        # bruto_* preserva o conteudo original da celula (inclusive o '-'),
+        # atual_* e a versao numerica usada so para comparar.
+        bruto_n = novo_vals[idx]  if idx < len(novo_vals)  else None
+        bruto_u = usado_vals[idx] if idx < len(usado_vals) else None
+        atual_n = valor_existente(bruto_n)
+        atual_u = valor_existente(bruto_u)
         # API devolve a variacao em % (ex.: 1.39); grava-se como fracao (0.0139)
         novo_n  = vals.get("novo")
         novo_u  = vals.get("usado")
@@ -327,9 +353,11 @@ def processar(wb) -> dict:
                 linha_mudou = True
 
         if linha_mudou:
+            # Sem dado novo, devolve a celula como estava -- nao troca '-'
+            # por vazio so porque o vizinho mudou.
             escrita_pendente[linha] = [
-                novo_n if novo_n is not None else atual_n,
-                novo_u if novo_u is not None else atual_u,
+                novo_n if novo_n is not None else bruto_n,
+                novo_u if novo_u is not None else bruto_u,
             ]
 
     # ---- escrita em blocos contiguos (minimiza chamadas COM) --------
