@@ -1,0 +1,47 @@
+name: Coleta CarRental
+
+# Roda o coletor do CarRental na nuvem via pipeline: UM download e UM upload do
+# "CarRental.xlsm".
+#
+# Fonte: IBGE SIDRA (IPCA de automovel novo e usado, 4 tabelas emendadas).
+#
+# ATENCAO -- esta planilha depende do passe do Excel logo depois da coleta.
+# Quatro das cinco colunas que o dashboard le sao formulas encadeadas (indices
+# acumulados e spread); o openpyxl preserva a formula mas descarta o valor em
+# cache, e o parser le justamente o cache. Rodar este workflow sozinho derruba o
+# dataset 'rental' ate o proximo ciclo do esteira.py recalcular no Excel.
+#
+# Secrets: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
+
+# Sem cron: quem manda no horario e o esteira.py, no PC do Bloomberg.
+# Este workflow fica disponivel so para disparo manual/depuracao -- a rodada
+# diaria passa pelo "Coleta completa" (coleta-tudo.yml).
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: coleta-carrental
+  cancel-in-progress: false
+
+jobs:
+  coleta:
+    # Impede que uma fonte externa presa segure o runner indefinidamente.
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+      - name: Resumo
+        run: echo "## Coleta CarRental - $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
+      # Sem `| tee`: o shell padrao do Actions e `bash -e` SEM pipefail, entao o
+      # status do pipe seria o do tee (sempre 0) e a falha passaria como sucesso.
+      - name: Pipeline CarRental
+        run: python CarRental/atualizar_carrental_pipeline.py

@@ -21,9 +21,22 @@ Variavel:
 Os valores sao gravados como fracao (ex.: variacao de 1,39% -> 0.0139) e as
 celulas recebem formato percentual '0.00%', exibindo '1,39%'.
 
-Escrita via xlwings — o arquivo tem VBA e formulas de array do Bloomberg na aba
-'Peers', que o openpyxl poderia corromper. O xlwings dirige o Excel real e
-preserva formatacao, formulas e demais abas intactas.
+Escrita via openpyxl + drive_io, para rodar no runner do GitHub (que nao tem
+Excel). O motivo original de usar xlwings -- as formulas de array do Bloomberg na
+aba 'Peers' -- e coberto hoje pelo drive_io._fix_single_cell_array_formulas, que
+roda no upload e evita o "Repaired Records" do Excel. Testado: a aba Peers sai do
+round-trip com as 6 BDH intactas, o VBA preservado e as duas abas no lugar.
+
+ATENCAO -- esta planilha DEPENDE do passe do Excel logo depois da coleta. Das
+cinco colunas que o dashboard le, quatro sao formulas encadeadas:
+    F = E - ajuste          (usado %MoM)
+    J = J[-1] * (1 + D)     (indice do novo, acumulado)
+    L = L[-1] * (1 + F)     (indice do usado, acumulado)
+    M = L / J - 1           (spread)
+O openpyxl preserva a formula mas descarta o valor em cache, e o parser do
+dashboard le justamente o cache. Coletar sem recalcular no Excel derruba o
+dataset 'rental' para 0/24 pontos -- verificado. Na esteira isso e garantido
+pelo passo 3; rodando o workflow individual, o dado so volta no ciclo seguinte.
 """
 
 import time
@@ -31,20 +44,25 @@ import datetime as dt
 from pathlib import Path
 
 import requests
-import xlwings as xw
+import openpyxl
+from openpyxl.utils import column_index_from_string
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
 
 
 # ============================================================
 # CONFIG
 # ============================================================
-DRIVE_ROOT = Path(
-    r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z"
-)
 XLSX_NAME  = "CarRental.xlsm"
 SHEET_NAME = "Preço Carros"
 
-COL_NOVO  = "C"   # Automovel Novo  — %MoM
-COL_USADO = "D"   # Automovel Usado — %MoM
+# Corrigido em 18/08/2026: apontavam para C e D, mas C e uma coluna
+# separadora (vazia nas 321 linhas de dado) e D ja contem o Novo. Gravar no
+# mapeamento antigo poria Usado por cima da serie de Novo, desde jan/2000.
+# O cabecalho da planilha e o parser do dashboard confirmam D e E.
+COL_NOVO  = "D"   # Automovel Novo  — %MoM
+COL_USADO = "E"   # Automovel Usado — %MoM
 COL_DATA  = "B"   # datas mensais — usada para validacao
 
 ANO_BASE = 2000
@@ -55,7 +73,8 @@ VARIAVEL   = "63"       # variacao mensal (%)
 # Usa-se NumberFormatLocal com a string pt-BR (virgula decimal) porque este
 # Excel roda em locale 416; passar "0.00%" faria o Excel ler o "." como
 # separador de milhar e gravar "#.000%" (sem casas decimais).
-FORMATO_PCT = "0,00%"
+# Invariante, nao local: o openpyxl grava o formato cru no XML, ao contrario
+FORMATO_PCT = "0.00%"
 
 # Tabelas do SIDRA emendadas (ordem crescente no tempo).
 # Cada entrada mapeia codigo da categoria (classificacao 315) -> serie interna.
@@ -100,21 +119,6 @@ EPS         = 1e-6   # tolerancia p/ considerar revisao de valor
 # ============================================================
 # HELPERS
 # ============================================================
-def localizar_planilha() -> Path:
-    """Localiza a planilha sem depender dos nomes das pastas intermediarias."""
-    encontrados = list(DRIVE_ROOT.rglob(XLSX_NAME))
-    if not encontrados:
-        raise FileNotFoundError(
-            f"Planilha {XLSX_NAME!r} nao encontrada dentro de {DRIVE_ROOT}"
-        )
-    if len(encontrados) > 1:
-        caminhos = "\n".join(f"  - {p}" for p in encontrados)
-        raise RuntimeError(
-            f"Foram encontradas varias planilhas chamadas {XLSX_NAME!r}:\n{caminhos}"
-        )
-    return encontrados[0]
-
-
 def row_of(ano: int, mes: int) -> int:
     """Linha 5 = jan/2000."""
     return ROW_BASE + (ano - ANO_BASE) * 12 + (mes - 1)
@@ -214,28 +218,23 @@ def fetch_agregado(agg: dict) -> dict:
 # MAIN
 # ============================================================
 def main():
-    path = localizar_planilha()
-    print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] Abrindo {path.name} via xlwings...")
+    # Sob o cloud_pipeline isto reaproveita o download unico da planilha; rodando
+    # sozinho, baixa e sobe de verdade. Nos dois casos, sem Excel instalado.
+    file_id = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(file_id)
+    print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] Abrindo {XLSX_NAME}...")
 
-    app = xw.App(visible=False, add_book=False)
+    wb = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
     try:
-        app.api.AskToUpdateLinks = False
-        app.display_alerts       = False
-        app.screen_updating      = False
-
-        wb = app.books.open(str(path), update_links=0, read_only=False)
-        try:
-            resultado = processar(wb)
-            if resultado["salvar"]:
-                wb.api.SaveLinkValues = True
-                wb.save()
-                print("Arquivo salvo.")
-            else:
-                print("Nada alterado — arquivo NAO salvo.")
-        finally:
-            wb.close()
+        resultado = processar(wb)
+        if resultado["salvar"]:
+            wb.save(path)
+            drive_io.update_file(file_id, path)
+            print("Arquivo salvo.")
+        else:
+            print("Nada alterado — arquivo NAO salvo.")
     finally:
-        app.quit()
+        wb.close()
 
     print_relatorio(resultado)
 
@@ -244,19 +243,22 @@ def main():
 # PROCESSAMENTO
 # ============================================================
 def processar(wb) -> dict:
-    sh = wb.sheets[SHEET_NAME]
+    sh = wb[SHEET_NAME]
 
-    last_row  = sh.range(f"{COL_DATA}{ROW_BASE}").end("down").row
-    novo_vals = sh.range(f"{COL_NOVO}{ROW_BASE}:{COL_NOVO}{last_row}").value
-    usado_vals = sh.range(f"{COL_USADO}{ROW_BASE}:{COL_USADO}{last_row}").value
-    datas_col = sh.range(f"{COL_DATA}{ROW_BASE}:{COL_DATA}{last_row}").value
+    # Equivale ao .end("down") do xlwings: desce pela coluna de datas ate a
+    # primeira lacuna.
+    last_row = ROW_BASE
+    while sh[f"{COL_DATA}{last_row + 1}"].value is not None:
+        last_row += 1
 
-    def as_list(v):
-        return v if isinstance(v, list) else [v]
+    def coluna(letra):
+        return [
+            sh[f"{letra}{row}"].value for row in range(ROW_BASE, last_row + 1)
+        ]
 
-    novo_vals  = as_list(novo_vals)
-    usado_vals = as_list(usado_vals)
-    datas_col  = as_list(datas_col)
+    novo_vals  = coluna(COL_NOVO)
+    usado_vals = coluna(COL_USADO)
+    datas_col  = coluna(COL_DATA)
 
     # ---- buscar e consolidar ----------------------------------------
     # Busca sempre as 4 tabelas (poucas chamadas, segundos). As tabelas
@@ -343,11 +345,13 @@ def processar(wb) -> dict:
         blocos.append(bloco)
 
         for bloco in blocos:
-            matriz = [escrita_pendente[ln] for ln in bloco]
             ini, fim = bloco[0], bloco[-1]
-            rng = sh.range(f"{COL_NOVO}{ini}:{COL_USADO}{fim}")
-            rng.value = matriz
-            rng.api.NumberFormatLocal = FORMATO_PCT
+            base = column_index_from_string(COL_NOVO)
+            for ln in bloco:
+                for deslocamento, valor in enumerate(escrita_pendente[ln]):
+                    celula = sh.cell(row=ln, column=base + deslocamento)
+                    celula.value = valor
+                    celula.number_format = FORMATO_PCT
             print(f"  Escritas linhas {ini}:{fim} ({len(bloco)} meses)")
 
     return {

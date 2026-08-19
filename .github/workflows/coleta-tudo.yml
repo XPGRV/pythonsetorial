@@ -16,6 +16,7 @@ name: Coleta completa
 #   BeefUS --> FrangoUS     sequencial por causa da chave da USDA (ver abaixo)
 #   WEG                     independente
 #   Transportes             independente
+#   CarRental               independente
 #
 # BeefBR -> FrangoBR e obrigatorio: o FrangoBR/copiar_secex.py copia a aba SECEX
 # do BeefBR.xlsm, e o atualiza_px_bovina_balanca.py --cloud-frangobr escreve no
@@ -158,9 +159,26 @@ jobs:
       - name: Pipeline Transportes
         run: python Transportes/atualizar_transportes_pipeline.py
 
+  carrental:
+    name: CarRental
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY }}
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+      - name: Pipeline CarRental
+        run: python CarRental/atualizar_carrental_pipeline.py
+
   resumo:
     name: Resumo
-    needs: [beefbr, frangobr, beefus, frangous, weg, transportes]
+    needs: [beefbr, frangobr, beefus, frangous, weg, transportes, carrental]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -177,4 +195,5 @@ jobs:
             echo "| FrangoUS | ${{ needs.frangous.result }} |"
             echo "| WEG | ${{ needs.weg.result }} |"
             echo "| Transportes | ${{ needs.transportes.result }} |"
+            echo "| CarRental | ${{ needs.carrental.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
