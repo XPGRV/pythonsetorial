@@ -216,6 +216,50 @@ def _fix_comment_paths(path: str) -> None:
     shutil.move(tmp, path)
 
 
+def _drop_calc_chain(path: str) -> None:
+    """Remove xl/calcChain.xml do pacote.
+
+    O calcChain e um INDICE da ordem em que o Excel calcula as formulas -- cache,
+    nao dado. O openpyxl preserva o indice do arquivo original, mas as celulas de
+    formula mudam a cada coleta: o coletor grava valor onde havia formula, os
+    consolidadores criam formula onde nao havia. O indice passa a apontar para
+    celula que nao e mais formula, e o Excel declara o arquivo corrompido:
+
+        Removed Records: Formula from /xl/calcChain.xml part
+
+    Com Notify=False, esse dialogo vira "Open method of Workbooks class failed" e
+    o passe do Excel perde a planilha inteira. Foi o que travou FrangoUS,
+    CarRental e WEG em todo ciclo entre 19 e 20/08.
+
+    Apagar e seguro: o Excel reconstroi o calcChain sozinho no primeiro
+    recalculo. O BeefBR.xlsm nunca teve essa parte e sempre abriu normalmente.
+    """
+    import re
+    import shutil
+    import tempfile
+    import zipfile
+
+    with zipfile.ZipFile(path, "r") as zin:
+        if "xl/calcChain.xml" not in zin.namelist():
+            return  # nada a fazer
+        fd, tmp = tempfile.mkstemp(suffix=".xlsm")
+        os.close(fd)
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                if item.filename == "xl/calcChain.xml":
+                    continue
+                data = zin.read(item.filename)
+                # A parte sai do pacote; as duas referencias a ela tambem, senao
+                # o Excel reclama de relacionamento apontando para o vazio.
+                if item.filename == "[Content_Types].xml":
+                    data = re.sub(rb"<Override[^>]*calcChain\.xml[^>]*/>", b"", data)
+                elif item.filename.endswith(".rels"):
+                    data = re.sub(rb"<Relationship[^>]*calcChain\.xml[^>]*/>", b"", data)
+                zout.writestr(item, data)
+    shutil.move(tmp, path)
+    print("[Drive] calcChain removido (o Excel reconstroi).", flush=True)
+
+
 def _fix_single_cell_array_formulas(path: str) -> None:
     """Remove metadados de formula matricial de 1 celula.
 
@@ -297,6 +341,7 @@ def update_file(file_id: str, local_path: str, mime: str = MIME_XLSM) -> dict:
     t0 = time.monotonic()
     _fix_comment_paths(local_path)
     _fix_single_cell_array_formulas(local_path)
+    _drop_calc_chain(local_path)
     # Upload retomavel: se a conexao TLS cair no meio do envio, o cliente
     # repete somente o chunk interrompido em vez de derrubar o workflow.
     media = MediaFileUpload(
