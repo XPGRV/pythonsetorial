@@ -28,7 +28,7 @@ CODIGO_MES = {
     7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z",
 }
 
-# prefixo, meses do ciclo, sufixo, digitos do ano, separador, defasagem, quantidade
+# prefixo, meses do ciclo, sufixo, digitos do ano, separador, defasagem, limite
 #
 # defasagem = quantos meses antes do codigo o contrato deixa de negociar.
 #   0  CBOT/ICE e o milho da B3 vencem no meio do mes do proprio codigo
@@ -37,14 +37,19 @@ CODIGO_MES = {
 #      (UCQ26, codigo de agosto, vence 31/07/26) -- por isso ele sai do ciclo
 #      um mes antes dos outros.
 #
-# quantidade = quantos contratos manter na planilha, espelhando o que ja estava
-# la' na mao. O dolar tem contrato todo mes, entao um horizonte em meses daria
-# uma lista longa demais; melhor contar contratos.
+# limite = ate onde ir. A lista NAO tem tamanho fixo: ela encolhe conforme os
+# contratos vencem e da' um salto quando o vencimento de referencia passa.
+#   ("terminal", mes, n)  vai ate a n-esima ocorrencia daquele mes.
+#                         Soja e milho fecham o ciclo em Novembro, algodao em
+#                         Dezembro; manter 2 e' o mesmo criterio que a janela
+#                         do grafico de futuros da dashboard usa.
+#   ("fim_ano", k)        vai ate dezembro do ano corrente + k (dolar: negocia
+#                         todo mes, entao o corte natural e' o fim do ano).
 CONTRATOS = {
-    "soja":    ("S",   (1, 3, 5, 7, 8, 9, 11), "Comdty", 1, " ", 0, 17),
-    "algodao": ("CT",  (3, 5, 7, 10, 12),      "Comdty", 1, "",  0, 12),
-    "milho":   ("CRD", (1, 3, 5, 7, 9, 11),    "Comdty", 1, "",  0, 8),
-    "dolar":   ("UC",  tuple(range(1, 13)),    "Curncy", 2, "",  1, 13),
+    "soja":    ("S",   (1, 3, 5, 7, 8, 9, 11), "Comdty", 1, " ", 0, ("terminal", 11, 2)),
+    "algodao": ("CT",  (3, 5, 7, 10, 12),      "Comdty", 1, "",  0, ("terminal", 12, 2)),
+    "milho":   ("CRD", (1, 3, 5, 7, 9, 11),    "Comdty", 1, "",  0, ("terminal", 11, 2)),
+    "dolar":   ("UC",  tuple(range(1, 13)),    "Curncy", 2, "",  1, ("fim_ano", 1)),
 }
 
 
@@ -54,36 +59,53 @@ def ticker(commodity: str, ano: int, mes: int) -> str:
     return f"{prefixo}{sep}{CODIGO_MES[mes]}{ano_txt} {sufixo}"
 
 
-def proximos(commodity: str, quantidade: int | None = None, hoje: date | None = None):
-    """Os proximos contratos que ainda negociam, do mais proximo ao mais longo.
+def proximos(commodity: str, hoje: date | None = None):
+    """Os contratos que ainda negociam, do mais proximo ate o limite do ciclo.
 
     Devolve (ano, mes, ticker) -- ano/mes sao os do CODIGO do contrato, que e'
     o que a dashboard usa como vencimento no eixo X.
     """
     hoje = hoje or date.today()
-    _, ciclo, _, _, _, defasagem, padrao = CONTRATOS[commodity]
-    quantidade = padrao if quantidade is None else quantidade
+    _, ciclo, _, _, _, defasagem, limite = CONTRATOS[commodity]
+
     # Um contrato ainda vale enquanto o mes de negociacao (codigo - defasagem)
     # nao ficou para tras. No mes corrente ele continua na lista: so vence no
     # meio/fim do mes, e a planilha o mantem ate virar.
-    atual = hoje.year * 12 + hoje.month - 1
-    saida, ordinal = [], atual + defasagem
-    while len(saida) < quantidade:
-        ano, mes = divmod(ordinal, 12)
-        mes += 1
-        if mes in ciclo:
-            saida.append((ano, mes, ticker(commodity, ano, mes)))
-        ordinal += 1
+    ordinal = hoje.year * 12 + hoje.month - 1 + defasagem
+
+    saida = []
+    if limite[0] == "terminal":
+        _, mes_terminal, quantos = limite
+        vistos = 0
+        while vistos < quantos:
+            ano, mes = divmod(ordinal, 12)
+            mes += 1
+            if mes in ciclo:
+                saida.append((ano, mes, ticker(commodity, ano, mes)))
+                if mes == mes_terminal:
+                    vistos += 1
+            ordinal += 1
+    else:  # ("fim_ano", k) — ate dezembro do ano corrente + k
+        ano_limite = hoje.year + limite[1]
+        while True:
+            ano, mes = divmod(ordinal, 12)
+            mes += 1
+            if ano > ano_limite:
+                break
+            if mes in ciclo:
+                saida.append((ano, mes, ticker(commodity, ano, mes)))
+            ordinal += 1
     return saida
 
 
 def main():
     parser = argparse.ArgumentParser(description="Gera os tickers dos futuros.")
-    parser.add_argument("--quantidade", type=int, default=None,
-                        help="quantos contratos por commodity (padrao: o de CONTRATOS)")
+    parser.add_argument("--data", default=None,
+                        help="simula outra data (AAAA-MM-DD), p/ conferir a virada do ciclo")
     args = parser.parse_args()
+    hoje = date.fromisoformat(args.data) if args.data else None
     for commodity in CONTRATOS:
-        lista = proximos(commodity, args.quantidade)
+        lista = proximos(commodity, hoje=hoje)
         print(f"\n{commodity.upper()} ({len(lista)} contratos)")
         for ano, mes, tk in lista:
             print(f"  {mes:02d}/{ano}  {tk}")
