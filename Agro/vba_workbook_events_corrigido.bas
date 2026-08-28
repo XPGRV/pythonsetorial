@@ -52,6 +52,62 @@ Private Const PRIMEIRA_LINHA As Long = 5
 Private Const ULTIMA_LINHA As Long = 200
 
 
+' O add-in do Bloomberg esta REALMENTE respondendo?
+'
+' Nao basta olhar AddIns(...).Installed: o add-in aparece instalado bem antes de
+' registrar as funcoes _xll. Se o Workbook_Open limpar nessa janela, o BDH nao
+' tem como derramar a serie de volta -- foi assim que a coluna E da BBG_Dados
+' ficou com 1 linha no lugar de 9.737. Aqui a gente pergunta ao proprio add-in.
+'
+' Detalhe importante: o macro antigo varria 329 mil celulas e demorava, o que
+' por acidente dava tempo de o add-in subir antes da limpeza. Ao acelerar a
+' busca das BDH, essa protecao acidental caiu -- por isso ela vira explicita.
+Private Function BloombergRespondendo() As Boolean
+    Dim v As Variant
+
+    On Error Resume Next
+    v = Application.Evaluate("BDP(""USDBRL Curncy"",""PX_LAST"")")
+    If Err.Number = 0 Then
+        If Not IsError(v) Then
+            If IsNumeric(v) Then BloombergRespondendo = True
+        End If
+    End If
+    Err.Clear
+    On Error GoTo 0
+End Function
+
+
+' Espera o add-in ficar pronto. Devolve False se estourar o tempo -- e nesse
+' caso o chamador NAO deve limpar nada.
+Private Function EsperarBloomberg(Optional segundos As Single = 60) As Boolean
+    Dim t0 As Single
+    t0 = Timer
+    Do
+        If BloombergRespondendo() Then
+            EsperarBloomberg = True
+            Exit Function
+        End If
+        DoEvents
+    Loop While Timer - t0 < segundos
+    EsperarBloomberg = False
+End Function
+
+
+' A celula tem algo dentro?
+' Comparar .Value com "" estoura "Tipo incompativel" (erro 13) quando a celula
+' contem valor de ERRO -- e' o que acontece ao abrir sem o add-in, que enche a
+' planilha de #NAME?. Erro conta como conteudo: a celula nao esta vazia.
+Private Function TemConteudo(cell As Range) As Boolean
+    Dim v As Variant
+    v = cell.Value
+    If IsError(v) Then
+        TemConteudo = True
+    Else
+        TemConteudo = (v <> "")
+    End If
+End Function
+
+
 ' Enderecos das celulas cuja formula contem BDH(, nesta aba.
 ' Devolve os enderecos (nao os Range) de proposito: assim quem chama pode
 ' alterar a planilha sem interferir na busca.
@@ -104,7 +160,7 @@ Private Sub AtualizarExibicaoFuturos()
         ' --- acha onde comeca a metade de formulas deste bloco ---
         rFormula = 0
         For r = PRIMEIRA_LINHA To ULTIMA_LINHA
-            If ws.Cells(r, colTk).Value <> "" And ws.Cells(r, colTk + 1).HasFormula Then
+            If TemConteudo(ws.Cells(r, colTk)) And ws.Cells(r, colTk + 1).HasFormula Then
                 rFormula = r
                 Exit For
             End If
@@ -116,7 +172,7 @@ Private Sub AtualizarExibicaoFuturos()
             nValidos = 0
             r = rFormula
             Do While r <= ULTIMA_LINHA
-                If ws.Cells(r, colTk).Value = "" Then Exit Do
+                If Not TemConteudo(ws.Cells(r, colTk)) Then Exit Do
                 nLinhas = nLinhas + 1
                 valorAtual = ws.Cells(r, colTk + 1).Value   ' preco atual
                 If Not IsError(valorAtual) Then
@@ -175,9 +231,9 @@ Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
             Set outputStart = cell.Offset(1, 0)
 
             ' Formula abaixo = BDH empilhada, nao derrame: nao mexe.
-            If outputStart.Value <> "" And Not outputStart.HasFormula Then
+            If TemConteudo(outputStart) And Not outputStart.HasFormula Then
                 ' Fim do bloco via End(xlDown), que e' nativo.
-                If ws.Cells(outputStart.Row + 1, outputStart.Column).Value = "" Then
+                If Not TemConteudo(ws.Cells(outputStart.Row + 1, outputStart.Column)) Then
                     lastRow = outputStart.Row
                 Else
                     lastRow = outputStart.End(xlDown).Row
@@ -208,7 +264,23 @@ Private Sub Workbook_Open()
         End If
     Next addIn
 
-    ' Se Bloomberg estiver presente, limpa os valores estaticos para o BDH atualizar
+    ' Instalado nao basta: so limpa depois que as funcoes _xll respondem de
+    ' verdade. Sem isso a limpeza pode acontecer na janela em que o add-in ainda
+    ' esta subindo, e a serie apagada nao volta.
+    If addInAtivo Then
+        If Not EsperarBloomberg(60) Then
+            ' MsgBox so quando ha' alguem na frente da tela: em automacao
+            ' (atualizar_bloomberg.py) uma caixa de dialogo trava o script.
+            If Application.Visible Then
+                MsgBox "O add-in do Bloomberg nao respondeu a tempo." & vbCrLf & _
+                       "Os dados NAO foram limpos, para nao perder as series." & vbCrLf & _
+                       "Feche sem salvar, espere o Bloomberg carregar e abra de novo.", _
+                       vbExclamation, "Agro.xlsm"
+            End If
+            Exit Sub
+        End If
+    End If
+
     If addInAtivo Then
         Dim ws As Worksheet
         Dim enderecos As Collection
