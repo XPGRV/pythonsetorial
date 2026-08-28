@@ -1,0 +1,40 @@
+name: Coleta Agro
+
+# Arrasta as formulas de desconto da aba BBG_Dados do Agro.xlsm (algodao, soja
+# e milho). Nao ha coletor de dados aqui: os precos chegam pelo Bloomberg via
+# BDH -- o que falta e' estender as formulas derivadas para as linhas novas.
+#
+# Roda ANTES do Bloomberg das 22h, que recalcula via F9 as formulas que o
+# openpyxl deixa sem cache.
+#
+# Secrets: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
+
+# Sem cron: quem manda no horario e o esteira.py, no PC do Bloomberg.
+# Este workflow fica disponivel so para disparo manual/depuracao -- a rodada
+# diaria passa pelo "Coleta completa" (coleta-tudo.yml).
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: coleta-agro
+  cancel-in-progress: false
+
+jobs:
+  coleta:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Instala dependencias
+        run: pip install -r requirements.txt
+      - name: Resumo
+        run: echo "## Coleta Agro - $(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pipeline Agro
+        run: python Agro/atualizar_agro_pipeline.py

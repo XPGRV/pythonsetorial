@@ -20,34 +20,34 @@ zero falso todo dia ate 2030. Nas linhas antigas sem cotacao isso nao acontece
 porque o Bloomberg deixa "#N/A N/A", que da erro e cai no "-".
 
 CACHE / ORDEM DE EXECUCAO — ao salvar, o openpyxl apaga o valor em cache de
-TODAS as formulas do arquivo. A dashboard le com SheetJS, que so le cache e nao
-recalcula. Como aqui as unicas formulas relevantes sao os proprios descontos,
-rodar sem recalcular deixaria os tres graficos de desconto em branco ate o
-Excel abrir a planilha de novo. Duas saidas:
+TODAS as formulas do arquivo, e a dashboard le com SheetJS, que so le cache e
+nao recalcula. Vale a mesma regra dos outros pipelines: este passo roda ANTES
+do Bloomberg, e o RefreshAll+F9 de la repoe o cache. O custo e um dia de atraso
+na linha mais nova (o preco de hoje so ganha desconto na rodada de amanha).
 
-  * rodar ANTES do passo Bloomberg — o RefreshAll+F9 de la restaura o cache
-    (mesma ordem dos outros pipelines); custa 1 dia de atraso na linha nova; ou
-  * rodar com --recalc, que abre o Excel local so para recalcular e salvar
-    (sem atraso, mas exige Excel na maquina).
+A flag --recalc existe para uso local/emergencial: abre o Excel da maquina so
+para recalcular e salvar, matando o atraso. Nao serve na nuvem (nao ha Excel no
+runner) e nao e usada pelo pipeline.
 
 Uso:
     python atualizar_agro.py --dry-run     # mostra o que faria
-    python atualizar_agro.py               # grava as formulas
+    python atualizar_agro.py               # grava as formulas (modo do pipeline)
     python atualizar_agro.py --recalc      # grava e recalcula no Excel local
 """
 
 import argparse
 import re
+import sys
 import time
 from copy import copy
 from pathlib import Path
 
 import openpyxl
 
-WORKBOOK_PATH = Path(
-    r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z"
-    r"\Arquivos\Setorial - Database\Agro.xlsm"
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import drive_io
+
+XLSX_NAME = "Agro.xlsm"
 SHEET_NAME = "BBG_Dados"
 FIRST_DATA_ROW = 4
 
@@ -170,10 +170,12 @@ def main():
                              "e restaurar o cache das formulas.")
     args = parser.parse_args()
 
-    if not WORKBOOK_PATH.exists():
-        raise FileNotFoundError(f"Planilha nao encontrada: {WORKBOOK_PATH}")
+    # Dentro do pipeline isto reaproveita o arquivo ja baixado (o download e o
+    # upload viram no-op); rodando sozinho, baixa e sobe por conta propria.
+    file_id = drive_io.find_file_id(XLSX_NAME)
+    path = drive_io.download_to_temp(file_id)
 
-    wb = openpyxl.load_workbook(WORKBOOK_PATH, keep_vba=True, data_only=False)
+    wb = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
     try:
         if SHEET_NAME not in wb.sheetnames:
             raise RuntimeError(
@@ -193,20 +195,19 @@ def main():
 
         prefix = "[DRY-RUN] " if args.dry_run else ""
         if total and not args.dry_run:
-            wb.save(WORKBOOK_PATH)
+            wb.save(path)
         print(f"{prefix}Consolidador Agro: {total} celula(s) estendida(s).")
     finally:
         close_workbook(wb)
 
     if total and not args.dry_run:
+        # O recalculo precisa acontecer antes do upload: e ele que repoe o
+        # cache que o openpyxl acabou de descartar.
         if args.recalc:
             print("Recalculando no Excel para restaurar o cache das formulas...")
-            recalcular_com_excel(WORKBOOK_PATH)
+            recalcular_com_excel(path)
             print("Recalculo concluido.")
-        else:
-            print("ATENCAO: as formulas ficaram sem valor em cache. A dashboard so "
-                  "mostrara os descontos depois que o Excel recalcular (passo "
-                  "Bloomberg ou --recalc).")
+        drive_io.update_file(file_id, path)
 
 
 if __name__ == "__main__":
