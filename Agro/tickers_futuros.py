@@ -16,7 +16,7 @@ que exigiu aceitar os dois formatos no parser da dashboard.
 
 Uso:
     python tickers_futuros.py            # imprime os tickers de hoje
-    python tickers_futuros.py --meses 30 # horizonte maior
+    python tickers_futuros.py --data 2026-11-20   # simula outra data
 """
 
 import argparse
@@ -28,7 +28,8 @@ CODIGO_MES = {
     7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z",
 }
 
-# prefixo, meses do ciclo, sufixo, digitos do ano, separador, defasagem, limite
+# prefixo, meses do ciclo, sufixo, digitos do ano, separador, defasagem, limite,
+# dia_venc
 #
 # defasagem = quantos meses antes do codigo o contrato deixa de negociar.
 #   0  CBOT/ICE e o milho da B3 vencem no meio do mes do proprio codigo
@@ -45,16 +46,28 @@ CODIGO_MES = {
 #                         do grafico de futuros da dashboard usa.
 #   ("fim_ano", k)        vai ate dezembro do ano corrente + k (dolar: negocia
 #                         todo mes, entao o corte natural e' o fim do ano).
+#
+# dia_venc = dia em que o contrato vence, nas bolsas que vencem no MEIO do mes.
+# Passado esse dia o contrato expira e o BDP passa a devolver "#N/A Field Not
+# Applicable", que iria parar na dashboard. O dolar usa 0: a defasagem ja' o
+# tira no fim do mes anterior.
+#
+# A data real oscila um dia entre contratos (soja 13-14, algodao 08, milho
+# 15-16) e so o BDP sabe a exata, entao aqui e' aproximacao: adotamos o menor
+# observado. O erro possivel e' de um dia -- no mes em que o vencimento cai no
+# dia maior, o contrato sai da lista uma pregao antes de expirar. Preferimos
+# esse lado: perder o ultimo pregao do contrato mais curto incomoda menos que
+# deixar um #N/A entrar na curva.
 CONTRATOS = {
-    "soja":    ("S",   (1, 3, 5, 7, 8, 9, 11), "Comdty", 1, " ", 0, ("terminal", 11, 2)),
-    "algodao": ("CT",  (3, 5, 7, 10, 12),      "Comdty", 1, "",  0, ("terminal", 12, 2)),
-    "milho":   ("CRD", (1, 3, 5, 7, 9, 11),    "Comdty", 1, "",  0, ("terminal", 11, 2)),
-    "dolar":   ("UC",  tuple(range(1, 13)),    "Curncy", 2, "",  1, ("fim_ano", 1)),
+    "soja":    ("S",   (1, 3, 5, 7, 8, 9, 11), "Comdty", 1, " ", 0, ("terminal", 11, 2), 13),
+    "algodao": ("CT",  (3, 5, 7, 10, 12),      "Comdty", 1, "",  0, ("terminal", 12, 2), 8),
+    "milho":   ("CRD", (1, 3, 5, 7, 9, 11),    "Comdty", 1, "",  0, ("terminal", 11, 2), 15),
+    "dolar":   ("UC",  tuple(range(1, 13)),    "Curncy", 2, "",  1, ("fim_ano", 1),      0),
 }
 
 
 def ticker(commodity: str, ano: int, mes: int) -> str:
-    prefixo, _, sufixo, digitos, sep, _, _ = CONTRATOS[commodity]
+    prefixo, _, sufixo, digitos, sep, _, _, _ = CONTRATOS[commodity]
     ano_txt = str(ano)[-digitos:] if digitos == 2 else str(ano % 10)
     return f"{prefixo}{sep}{CODIGO_MES[mes]}{ano_txt} {sufixo}"
 
@@ -66,12 +79,15 @@ def proximos(commodity: str, hoje: date | None = None):
     o que a dashboard usa como vencimento no eixo X.
     """
     hoje = hoje or date.today()
-    _, ciclo, _, _, _, defasagem, limite = CONTRATOS[commodity]
+    _, ciclo, _, _, _, defasagem, limite, dia_venc = CONTRATOS[commodity]
 
-    # Um contrato ainda vale enquanto o mes de negociacao (codigo - defasagem)
-    # nao ficou para tras. No mes corrente ele continua na lista: so vence no
-    # meio/fim do mes, e a planilha o mantem ate virar.
+    # Um contrato vale enquanto o mes de negociacao (codigo - defasagem) nao
+    # ficou para tras.
     ordinal = hoje.year * 12 + hoje.month - 1 + defasagem
+    # No mes do proprio vencimento o contrato conta ate o dia em que vence;
+    # depois disso ja' expirou (ver dia_venc em CONTRATOS).
+    if dia_venc and hoje.day > dia_venc:
+        ordinal += 1
 
     saida = []
     if limite[0] == "terminal":
