@@ -287,12 +287,23 @@ def _fix_single_cell_array_formulas(path: str) -> None:
     # "remove se ref == referencia da celula OU se ref e' uma celula unica", e
     # a referencia da celula e' sempre uma celula unica — logo a primeira
     # condicao ja' esta contida na segunda.
-    formula_re = re.compile(r"<f\b([^>]*)>")
+    # Precisa do corpo da formula (nao so dos atributos) para reconhecer as
+    # funcoes Bloomberg que SAO matriciais de verdade -- ver ARRAY_REAL_RE.
+    formula_re = re.compile(r"<f\b([^>]*)>([^<]*)</f>")
     ref_unica_re = re.compile(r"^\$?[A-Za-z]{1,3}\$?\d+$")
+    # BDH/BDS/BQL devolvem um bloco de valores: sao matriciais por natureza e
+    # continuam assim mesmo quando o range pedido cabe em uma celula
+    # ("Points=1"). Tirar o t="array" delas quebra a coleta -- foi o que
+    # esvaziou as BDH de 1 sem./1 mes da aba Futuros do Agro. Ja BDP devolve
+    # escalar, entao segue elegivel a normalizacao.
+    ARRAY_REAL_RE = re.compile(r"\b(BDH|BDS|BQL)\s*\(", re.IGNORECASE)
 
     def normalize_formula(match: re.Match) -> str:
-        attrs = match.group(1)
+        attrs, corpo = match.group(1), match.group(2)
         if 't="array"' not in attrs:
+            return match.group(0)
+
+        if ARRAY_REAL_RE.search(corpo):
             return match.group(0)
 
         ref_match = re.search(r'\bref="([^"]+)"', attrs)
@@ -301,7 +312,7 @@ def _fix_single_cell_array_formulas(path: str) -> None:
 
         attrs = re.sub(r'\s+t="array"', "", attrs)
         attrs = re.sub(r'\s+ref="[^"]+"', "", attrs)
-        return f"<f{attrs}>"
+        return f"<f{attrs}>{corpo}</f>"
 
     mudou = False
     with zipfile.ZipFile(path, "r") as zin:
