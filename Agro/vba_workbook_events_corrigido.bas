@@ -144,6 +144,8 @@ Private Sub AtualizarExibicaoFuturos()
     Dim nLinhas As Long, nValidos As Long
     Dim linha As Long, c As Long
     Dim valorAtual As Variant
+    Dim carregando As Boolean
+    Dim origem As Range, destino As Range
 
     On Error Resume Next
     Set ws = Me.Worksheets("Futuros")
@@ -170,10 +172,18 @@ Private Sub AtualizarExibicaoFuturos()
             ' --- conta as linhas e ve se ha preco de verdade ---
             nLinhas = 0
             nValidos = 0
+            carregando = False
             r = rFormula
             Do While r <= ULTIMA_LINHA
                 If Not TemConteudo(ws.Cells(r, colTk)) Then Exit Do
                 nLinhas = nLinhas + 1
+                ' "Requesting Data..." = BDH ainda carregando. Copiar agora
+                ' gravaria meio dado por cima do bom; melhor pular o bloco.
+                For c = 1 To 3
+                    If InStr(1, CStr(ws.Cells(r, colTk + c).Text), "Requesting") > 0 Then
+                        carregando = True
+                    End If
+                Next c
                 valorAtual = ws.Cells(r, colTk + 1).Value   ' preco atual
                 If Not IsError(valorAtual) Then
                     If IsNumeric(valorAtual) And valorAtual <> "" Then
@@ -185,7 +195,7 @@ Private Sub AtualizarExibicaoFuturos()
 
             ' Salvaguarda: sem nenhum preco numerico (ex.: abriu sem Bloomberg e
             ' virou tudo #N/A), preserva o que ja' esta em cima.
-            If nValidos > 0 Then
+            If nValidos > 0 And Not carregando Then
 
                 ' limpa a exibicao antiga -- o ciclo pode ter encurtado.
                 ' para uma linha antes da separacao, para nunca tocar nas formulas
@@ -197,8 +207,15 @@ Private Sub AtualizarExibicaoFuturos()
                 ' copia valores: formulas -> exibicao
                 For linha = 0 To nLinhas - 1
                     For c = -1 To 3
-                        ws.Cells(PRIMEIRA_LINHA + linha, colTk + c).Value = _
-                            ws.Cells(rFormula + linha, colTk + c).Value
+                        Set origem = ws.Cells(rFormula + linha, colTk + c)
+                        Set destino = ws.Cells(PRIMEIRA_LINHA + linha, colTk + c)
+                        ' A data de vencimento vem do BDP como TEXTO. Escrita
+                        ' direta, o Excel reinterpreta pelo locale e "08/10/2026"
+                        ' (8/out) vira 10/ago. Forcar formato texto preserva.
+                        If VarType(origem.Value) = vbString Then
+                            destino.NumberFormat = "@"
+                        End If
+                        destino.Value = origem.Value
                     Next c
                 Next linha
 
