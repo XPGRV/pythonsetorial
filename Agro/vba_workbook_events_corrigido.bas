@@ -50,6 +50,9 @@
 Private Const COLUNAS_TICKER As String = "2,11,20,29"
 Private Const PRIMEIRA_LINHA As Long = 5
 Private Const ULTIMA_LINHA As Long = 200
+' Coluna usada so para o teste do add-in (limpa em seguida). Bem longe de
+' qualquer dado: a planilha vai ate a coluna 32 (AF).
+Private Const CELULA_TESTE_COL As Long = 200
 
 
 ' O add-in do Bloomberg esta REALMENTE respondendo?
@@ -63,16 +66,27 @@ Private Const ULTIMA_LINHA As Long = 200
 ' por acidente dava tempo de o add-in subir antes da limpeza. Ao acelerar a
 ' busca das BDH, essa protecao acidental caiu -- por isso ela vira explicita.
 Private Function BloombergRespondendo() As Boolean
+    Dim cel As Range
     Dim v As Variant
 
+    ' Application.Evaluate NAO serve aqui: ele usa o avaliador interno, que nao
+    ' enxerga as funcoes registradas pelo add-in (_xll). A checagem so e'
+    ' confiavel pelo caminho de verdade -- escrever a formula numa celula,
+    ' calcular e ler o resultado.
+    Set cel = Me.Worksheets(1).Cells(1, CELULA_TESTE_COL)
+
     On Error Resume Next
-    v = Application.Evaluate("BDP(""USDBRL Curncy"",""PX_LAST"")")
-    If Err.Number = 0 Then
-        If Not IsError(v) Then
-            If IsNumeric(v) Then BloombergRespondendo = True
-        End If
+    cel.Formula = "=BDP(""USDBRL Curncy"",""PX_LAST"")"
+    cel.Calculate
+    v = cel.Value
+    On Error GoTo 0
+
+    If Not IsError(v) Then
+        If IsNumeric(v) And v <> "" Then BloombergRespondendo = True
     End If
-    Err.Clear
+
+    On Error Resume Next
+    cel.ClearContents
     On Error GoTo 0
 End Function
 
@@ -281,52 +295,79 @@ Private Sub Workbook_Open()
         End If
     Next addIn
 
+    If Not addInAtivo Then Exit Sub
+
     ' Instalado nao basta: so limpa depois que as funcoes _xll respondem de
     ' verdade. Sem isso a limpeza pode acontecer na janela em que o add-in ainda
     ' esta subindo, e a serie apagada nao volta.
-    If addInAtivo Then
-        If Not EsperarBloomberg(60) Then
-            ' MsgBox so quando ha' alguem na frente da tela: em automacao
-            ' (atualizar_bloomberg.py) uma caixa de dialogo trava o script.
-            If Application.Visible Then
-                MsgBox "O add-in do Bloomberg nao respondeu a tempo." & vbCrLf & _
-                       "Os dados NAO foram limpos, para nao perder as series." & vbCrLf & _
-                       "Feche sem salvar, espere o Bloomberg carregar e abra de novo.", _
-                       vbExclamation, "Agro.xlsm"
-            End If
-            Exit Sub
+    If Not EsperarBloomberg(60) Then
+        ' MsgBox so quando ha' alguem na frente da tela: em automacao
+        ' (atualizar_bloomberg.py) uma caixa de dialogo trava o script.
+        If Application.Visible Then
+            MsgBox "O add-in do Bloomberg nao respondeu a tempo, entao os dados " & _
+                   "NAO foram limpos (evita perder as series)." & vbCrLf & vbCrLf & _
+                   "Se o Bloomberg estiver carregado e mesmo assim os dados nao " & _
+                   "atualizarem, rode a macro LimparParaBDHManual (Alt+F8).", _
+                   vbExclamation, "Agro.xlsm"
         End If
+        Exit Sub
     End If
 
-    If addInAtivo Then
-        Dim ws As Worksheet
-        Dim enderecos As Collection
-        Dim endereco As Variant
-        Dim cell As Range
-        Dim outputStart As Range
-        Dim lastRow As Long
+    Application.ScreenUpdating = False
+    LimparAbaixoDasBDH
+    Application.ScreenUpdating = True
+End Sub
 
-        Application.ScreenUpdating = False
 
-        For Each ws In Me.Worksheets
-            Set enderecos = EnderecosComBDH(ws)
+' Limpa os valores estaticos abaixo de cada BDH, para a serie ser baixada de
+' novo. Nao toca em celula que tenha formula propria (BDH empilhada da aba
+' Futuros) nem faz limpeza celula a celula -- um ClearContents por bloco.
+Private Sub LimparAbaixoDasBDH()
+    Dim ws As Worksheet
+    Dim enderecos As Collection
+    Dim endereco As Variant
+    Dim cell As Range
+    Dim outputStart As Range
+    Dim lastRow As Long
 
-            For Each endereco In enderecos
-                Set cell = ws.Range(CStr(endereco))
-                Set outputStart = cell.Offset(1, 0)
+    For Each ws In Me.Worksheets
+        Set enderecos = EnderecosComBDH(ws)
 
-                ' Formula abaixo = BDH empilhada, nao derrame: nao mexe.
-                If Not IsEmpty(outputStart) And Not outputStart.HasFormula Then
-                    lastRow = ws.Cells(ws.Rows.Count, outputStart.Column).End(xlUp).Row
-                    If lastRow >= outputStart.Row Then
-                        ' Um ClearContents por bloco. Celula a celula chegava a
-                        ' centenas de milhares de escritas e derrubava o add-in.
-                        ws.Range(outputStart, ws.Cells(lastRow, outputStart.Column)).ClearContents
-                    End If
+        For Each endereco In enderecos
+            Set cell = ws.Range(CStr(endereco))
+            Set outputStart = cell.Offset(1, 0)
+
+            ' Formula abaixo = BDH empilhada, nao derrame: nao mexe.
+            If Not IsEmpty(outputStart) And Not outputStart.HasFormula Then
+                lastRow = ws.Cells(ws.Rows.Count, outputStart.Column).End(xlUp).Row
+                If lastRow >= outputStart.Row Then
+                    ws.Range(outputStart, ws.Cells(lastRow, outputStart.Column)).ClearContents
                 End If
-            Next endereco
-        Next ws
+            End If
+        Next endereco
+    Next ws
+End Sub
 
-        Application.ScreenUpdating = True
+
+' ---------------------------------------------------------------------------
+' Fallback manual: limpa os valores estaticos para o BDH derramar de novo.
+' Use pelo menu de macros (Alt+F8 > LimparParaBDHManual) quando o Bloomberg
+' estiver comprovadamente carregado e a abertura automatica nao tiver limpado.
+' Pede confirmacao porque apaga a serie contando que o BDH vai repor.
+' ---------------------------------------------------------------------------
+Public Sub LimparParaBDHManual()
+    If MsgBox("Isto apaga os valores abaixo de cada BDH para a serie ser " & _
+              "baixada de novo." & vbCrLf & vbCrLf & _
+              "So continue com o Bloomberg carregado e funcionando." & vbCrLf & _
+              "Continuar?", vbYesNo + vbExclamation, "Agro.xlsm") <> vbYes Then
+        Exit Sub
     End If
+
+    Application.ScreenUpdating = False
+    LimparAbaixoDasBDH
+    Application.ScreenUpdating = True
+
+    Application.CalculateFull
+    MsgBox "Pronto. Espere as celulas sairem de ""Requesting Data..."" antes de salvar.", _
+           vbInformation, "Agro.xlsm"
 End Sub
