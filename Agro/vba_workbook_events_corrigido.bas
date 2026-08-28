@@ -16,16 +16,28 @@
 ' entao o BeforeSave congelava as de baixo (formula virava valor) e o
 ' Workbook_Open apagava o que sobrou -- so a primeira de cada bloco escapava.
 '
-' Correcao: celula com formula nunca e' derrame. Os eventos nao comecam se a
-' celula de baixo ja' tem formula, e o bloco para na primeira formula em vez
-' de atravessar. Quem derrama serie segue igual (derrame nao tem formula).
+' Correcao: celula com formula nunca e' derrame, entao os eventos nao mexem
+' quando a celula de baixo ja' tem formula. Quem derrama serie segue igual
+' (derrame nao tem formula).
 '
 ' -------------------------------------------------------------------------
-' 2) COPIA AUTOMATICA PARA A AREA DE EXIBICAO
+' 2) DESEMPENHO (o add-in do Bloomberg caia no meio)
+' A versao antiga varria "For Each cell In ws.UsedRange": 329 mil celulas,
+' quase todas na BBG_Dados (11 mil linhas x 29 colunas). Agora as BDH sao
+' localizadas com Find/FindNext, que e' nativo -- sao ~124 celulas, nao 329
+' mil. E a limpeza voltou a ser em UM ClearContents por bloco: fazer celula a
+' celula dava centenas de milhares de escritas e travava o Excel, derrubando o
+' add-in junto.
+'
+' Os enderecos sao coletados ANTES de alterar qualquer celula: mexer na
+' planilha no meio de um Find/FindNext bagunca a proria busca.
+'
+' -------------------------------------------------------------------------
+' 3) COPIA AUTOMATICA PARA A AREA DE EXIBICAO
 ' Cada bloco da aba Futuros tem duas metades: em cima os valores que a
 ' dashboard le (e que abrem sem o Bloomberg) e embaixo as formulas vivas.
 ' Passar uma para a outra era manual. AtualizarExibicaoFuturos faz isso no
-' BeforeSave, que roda depois do Bloomberg ja' ter calculado.
+' BeforeSave, que roda depois de o Bloomberg ja' ter calculado.
 '
 ' Salvaguarda: se a metade de formulas nao tiver nenhum preco numerico (ex.:
 ' abriu sem o Bloomberg e tudo virou #N/A), a exibicao NAO e' tocada -- melhor
@@ -38,6 +50,34 @@
 Private Const COLUNAS_TICKER As String = "2,11,20,29"
 Private Const PRIMEIRA_LINHA As Long = 5
 Private Const ULTIMA_LINHA As Long = 200
+
+
+' Enderecos das celulas cuja formula contem BDH(, nesta aba.
+' Devolve os enderecos (nao os Range) de proposito: assim quem chama pode
+' alterar a planilha sem interferir na busca.
+Private Function EnderecosComBDH(ws As Worksheet) As Collection
+    Dim achadas As Collection
+    Dim cell As Range
+    Dim primeiro As String
+
+    Set achadas = New Collection
+
+    On Error Resume Next
+    Set cell = ws.Cells.Find(What:="BDH(", LookIn:=xlFormulas, _
+                             LookAt:=xlPart, MatchCase:=False)
+    On Error GoTo 0
+
+    If Not cell Is Nothing Then
+        primeiro = cell.Address
+        Do
+            achadas.Add cell.Address
+            Set cell = ws.Cells.FindNext(cell)
+            If cell Is Nothing Then Exit Do
+        Loop While cell.Address <> primeiro
+    End If
+
+    Set EnderecosComBDH = achadas
+End Function
 
 
 Private Sub AtualizarExibicaoFuturos()
@@ -114,6 +154,8 @@ End Sub
 
 Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
     Dim ws As Worksheet
+    Dim enderecos As Collection
+    Dim endereco As Variant
     Dim cell As Range
     Dim outputStart As Range
     Dim lastRow As Long
@@ -126,31 +168,27 @@ Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
     AtualizarExibicaoFuturos
 
     For Each ws In Me.Worksheets
-        For Each cell In ws.UsedRange
-            If cell.HasFormula Then
-                If InStr(1, UCase(cell.Formula), "BDH(") > 0 Then
+        Set enderecos = EnderecosComBDH(ws)
 
-                    Set outputStart = cell.Offset(1, 0)
+        For Each endereco In enderecos
+            Set cell = ws.Range(CStr(endereco))
+            Set outputStart = cell.Offset(1, 0)
 
-                    ' (1) formula abaixo = BDH empilhada, nao derrame: nao mexe
-                    If outputStart.Value <> "" And Not outputStart.HasFormula Then
-                        lastRow = outputStart.Row
-                        ' (2) para na primeira formula, alem da primeira vazia
-                        Do While ws.Cells(lastRow, outputStart.Column).Value <> "" _
-                                 And Not ws.Cells(lastRow, outputStart.Column).HasFormula
-                            lastRow = lastRow + 1
-                        Loop
-                        lastRow = lastRow - 1
+            ' Formula abaixo = BDH empilhada, nao derrame: nao mexe.
+            If outputStart.Value <> "" And Not outputStart.HasFormula Then
+                ' Fim do bloco via End(xlDown), que e' nativo.
+                If ws.Cells(outputStart.Row + 1, outputStart.Column).Value = "" Then
+                    lastRow = outputStart.Row
+                Else
+                    lastRow = outputStart.End(xlDown).Row
+                End If
 
-                        If lastRow >= outputStart.Row Then
-                            Set outputRng = ws.Range(outputStart, ws.Cells(lastRow, outputStart.Column))
-                            outputRng.Value = outputRng.Value
-                        End If
-                    End If
-
+                If lastRow >= outputStart.Row Then
+                    Set outputRng = ws.Range(outputStart, ws.Cells(lastRow, outputStart.Column))
+                    outputRng.Value = outputRng.Value
                 End If
             End If
-        Next cell
+        Next endereco
     Next ws
 
     Application.ScreenUpdating = True
@@ -173,34 +211,31 @@ Private Sub Workbook_Open()
     ' Se Bloomberg estiver presente, limpa os valores estaticos para o BDH atualizar
     If addInAtivo Then
         Dim ws As Worksheet
+        Dim enderecos As Collection
+        Dim endereco As Variant
         Dim cell As Range
         Dim outputStart As Range
         Dim lastRow As Long
-        Dim linha As Long
 
         Application.ScreenUpdating = False
 
         For Each ws In Me.Worksheets
-            For Each cell In ws.UsedRange
-                If cell.HasFormula Then
-                    If InStr(1, UCase(cell.Formula), "BDH(") > 0 Then
+            Set enderecos = EnderecosComBDH(ws)
 
-                        Set outputStart = cell.Offset(1, 0)
+            For Each endereco In enderecos
+                Set cell = ws.Range(CStr(endereco))
+                Set outputStart = cell.Offset(1, 0)
 
-                        ' (1) formula abaixo = BDH empilhada, nao derrame: nao mexe
-                        If Not IsEmpty(outputStart) And Not outputStart.HasFormula Then
-                            lastRow = ws.Cells(ws.Rows.Count, outputStart.Column).End(xlUp).Row
-
-                            ' (2) limpa celula a celula e para na primeira formula
-                            For linha = outputStart.Row To lastRow
-                                If ws.Cells(linha, outputStart.Column).HasFormula Then Exit For
-                                ws.Cells(linha, outputStart.Column).ClearContents
-                            Next linha
-                        End If
-
+                ' Formula abaixo = BDH empilhada, nao derrame: nao mexe.
+                If Not IsEmpty(outputStart) And Not outputStart.HasFormula Then
+                    lastRow = ws.Cells(ws.Rows.Count, outputStart.Column).End(xlUp).Row
+                    If lastRow >= outputStart.Row Then
+                        ' Um ClearContents por bloco. Celula a celula chegava a
+                        ' centenas de milhares de escritas e derrubava o add-in.
+                        ws.Range(outputStart, ws.Cells(lastRow, outputStart.Column)).ClearContents
                     End If
                 End If
-            Next cell
+            Next endereco
         Next ws
 
         Application.ScreenUpdating = True
