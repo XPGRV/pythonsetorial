@@ -69,6 +69,17 @@ def bcb_fx(start_date, end_date):
         },
         timeout=90,
     )
+    # O SGS devolve 404 -- nao 200 com lista vazia -- quando o intervalo pedido
+    # nao tem cotacao publicada. Acontece todo dia util antes de ~13h (a PTAX do
+    # dia ainda nao saiu) e em fim de semana e feriado, porque nesses casos o
+    # intervalo vira "hoje ate hoje". Nao e erro: e so nao ter FX novo ainda.
+    if response.status_code == 404:
+        print(
+            f"[BCB] sem cotacao de {start_date:%d/%m/%Y} a {end_date:%d/%m/%Y}; "
+            "seguindo sem FX novo nesta rodada.",
+            flush=True,
+        )
+        return {}
     response.raise_for_status()
     rates = {}
     for item in response.json():
