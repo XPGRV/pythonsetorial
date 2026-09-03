@@ -65,45 +65,59 @@ Private Const CELULA_TESTE_COL As Long = 200
 ' Detalhe importante: o macro antigo varria 329 mil celulas e demorava, o que
 ' por acidente dava tempo de o add-in subir antes da limpeza. Ao acelerar a
 ' busca das BDH, essa protecao acidental caiu -- por isso ela vira explicita.
-Private Function BloombergRespondendo() As Boolean
+Private Function EsperarBloomberg(Optional segundos As Single = 60) As Boolean
+    ' Espera o add-in do Bloomberg responder de verdade. Devolve False se
+    ' estourar o tempo -- e nesse caso o chamador NAO deve limpar nada.
+    '
+    ' Application.Evaluate NAO serve: usa o avaliador interno, que nao enxerga
+    ' as funcoes registradas pelo add-in (_xll). A checagem so e' confiavel
+    ' pelo caminho de verdade: formula numa celula e leitura do resultado.
+    '
+    ' O PULO DO GATO: a BDP e ASSINCRONA. A primeira leitura quase sempre
+    ' devolve "#N/A Requesting Data" e o valor chega depois. A versao anterior
+    ' escrevia a formula, lia e fazia ClearContents na MESMA passada, dentro de
+    ' um laco -- ou seja, matava a requisicao pendente e recomecava do zero a
+    ' cada volta. So passava se o add-in ja tivesse o ticker em cache; senao
+    ' gastava os 60s e desistia, e o Workbook_Open abria o MsgBox que, em
+    ' automacao, pendura o Workbooks.Open para sempre.
+    '
+    ' Agora a formula e escrita UMA vez e o laco apenas observa a celula ate o
+    ' valor chegar. Sem recalcular no meio: recalcular reemite a requisicao e
+    ' reinicia a espera, que era a outra metade do problema. A limpeza fica no
+    ' fim, com ou sem sucesso.
     Dim cel As Range
     Dim v As Variant
+    Dim t0 As Single
 
-    ' Application.Evaluate NAO serve aqui: ele usa o avaliador interno, que nao
-    ' enxerga as funcoes registradas pelo add-in (_xll). A checagem so e'
-    ' confiavel pelo caminho de verdade -- escrever a formula numa celula,
-    ' calcular e ler o resultado.
     Set cel = Me.Worksheets(1).Cells(1, CELULA_TESTE_COL)
 
     On Error Resume Next
+    cel.ClearContents
     cel.Formula = "=BDP(""USDBRL Curncy"",""PX_LAST"")"
-    cel.Calculate
-    v = cel.Value
+    cel.Calculate                       ' dispara UMA vez; o resto e' espera
     On Error GoTo 0
 
-    If Not IsError(v) Then
-        If IsNumeric(v) And v <> "" Then BloombergRespondendo = True
-    End If
+    t0 = Timer
+    Do
+        On Error Resume Next
+        v = cel.Value
+        On Error GoTo 0
+
+        If Not IsError(v) Then
+            If IsNumeric(v) Then
+                If v <> "" And v <> 0 Then
+                    EsperarBloomberg = True
+                    Exit Do
+                End If
+            End If
+        End If
+
+        DoEvents                        ' deixa o add-in entregar o valor
+    Loop While Timer - t0 < segundos
 
     On Error Resume Next
     cel.ClearContents
     On Error GoTo 0
-End Function
-
-
-' Espera o add-in ficar pronto. Devolve False se estourar o tempo -- e nesse
-' caso o chamador NAO deve limpar nada.
-Private Function EsperarBloomberg(Optional segundos As Single = 60) As Boolean
-    Dim t0 As Single
-    t0 = Timer
-    Do
-        If BloombergRespondendo() Then
-            EsperarBloomberg = True
-            Exit Function
-        End If
-        DoEvents
-    Loop While Timer - t0 < segundos
-    EsperarBloomberg = False
 End Function
 
 
