@@ -1,5 +1,13 @@
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
 ' ============================================================================
-' ThisWorkbook — eventos que cuidam das BDH + copia dos futuros para a exibicao
+' ThisWorkbook  eventos que cuidam das BDH + copia dos futuros para a exibicao
 '
 ' Cole no editor do VBA (Alt+F11 > ThisWorkbook), substituindo o conteudo
 ' atual. A estrutura da planilha nao muda: e' so o macro que fica mais esperto.
@@ -42,6 +50,24 @@
 ' Salvaguarda: se a metade de formulas nao tiver nenhum preco numerico (ex.:
 ' abriu sem o Bloomberg e tudo virou #N/A), a exibicao NAO e' tocada -- melhor
 ' manter o ultimo dado bom do que zerar a serie da dashboard.
+'
+' -------------------------------------------------------------------------
+' 4) POR QUE NAO HA MAIS ESPERA PELO BLOOMBERG
+' Houve aqui um EsperarBloomberg que sondava o add-in com uma BDP antes de
+' limpar, e um MsgBox quando a sonda falhava. Isso travava a abertura mesmo
+' com o Bloomberg vivo: a BDP e' ASSINCRONA, entao a sonda lia
+' "#N/A Requesting Data" e se dava por falhada.
+'
+' Nenhuma das outras oito planilhas tem sonda, e todas limpam sem problema --
+' elas so olham addIn.Installed.
+'
+' O que a sonda tentava substituir era a folga que a varredura lenta dava por
+' acidente (secao 2). Essa folga voltou como uma espera fixa e curta no
+' Workbook_Open, sem nada que possa falhar.
+'
+' Quem garante de verdade que o Bloomberg esta de pe e' o
+' atualizar_bloomberg.py: ele so abre planilha depois de passar num BDP de
+' teste, e restaura o backup se a planilha voltar cheia de #N/A.
 ' ============================================================================
 
 ' Coluna do TICKER de cada bloco: B=2 (soja), K=11 (algodao), T=20 (dolar),
@@ -50,75 +76,6 @@
 Private Const COLUNAS_TICKER As String = "2,11,20,29"
 Private Const PRIMEIRA_LINHA As Long = 5
 Private Const ULTIMA_LINHA As Long = 200
-' Coluna usada so para o teste do add-in (limpa em seguida). Bem longe de
-' qualquer dado: a planilha vai ate a coluna 32 (AF).
-Private Const CELULA_TESTE_COL As Long = 200
-
-
-' O add-in do Bloomberg esta REALMENTE respondendo?
-'
-' Nao basta olhar AddIns(...).Installed: o add-in aparece instalado bem antes de
-' registrar as funcoes _xll. Se o Workbook_Open limpar nessa janela, o BDH nao
-' tem como derramar a serie de volta -- foi assim que a coluna E da BBG_Dados
-' ficou com 1 linha no lugar de 9.737. Aqui a gente pergunta ao proprio add-in.
-'
-' Detalhe importante: o macro antigo varria 329 mil celulas e demorava, o que
-' por acidente dava tempo de o add-in subir antes da limpeza. Ao acelerar a
-' busca das BDH, essa protecao acidental caiu -- por isso ela vira explicita.
-Private Function EsperarBloomberg(Optional segundos As Single = 60) As Boolean
-    ' Espera o add-in do Bloomberg responder de verdade. Devolve False se
-    ' estourar o tempo -- e nesse caso o chamador NAO deve limpar nada.
-    '
-    ' Application.Evaluate NAO serve: usa o avaliador interno, que nao enxerga
-    ' as funcoes registradas pelo add-in (_xll). A checagem so e' confiavel
-    ' pelo caminho de verdade: formula numa celula e leitura do resultado.
-    '
-    ' O PULO DO GATO: a BDP e ASSINCRONA. A primeira leitura quase sempre
-    ' devolve "#N/A Requesting Data" e o valor chega depois. A versao anterior
-    ' escrevia a formula, lia e fazia ClearContents na MESMA passada, dentro de
-    ' um laco -- ou seja, matava a requisicao pendente e recomecava do zero a
-    ' cada volta. So passava se o add-in ja tivesse o ticker em cache; senao
-    ' gastava os 60s e desistia, e o Workbook_Open abria o MsgBox que, em
-    ' automacao, pendura o Workbooks.Open para sempre.
-    '
-    ' Agora a formula e escrita UMA vez e o laco apenas observa a celula ate o
-    ' valor chegar. Sem recalcular no meio: recalcular reemite a requisicao e
-    ' reinicia a espera, que era a outra metade do problema. A limpeza fica no
-    ' fim, com ou sem sucesso.
-    Dim cel As Range
-    Dim v As Variant
-    Dim t0 As Single
-
-    Set cel = Me.Worksheets(1).Cells(1, CELULA_TESTE_COL)
-
-    On Error Resume Next
-    cel.ClearContents
-    cel.Formula = "=BDP(""USDBRL Curncy"",""PX_LAST"")"
-    cel.Calculate                       ' dispara UMA vez; o resto e' espera
-    On Error GoTo 0
-
-    t0 = Timer
-    Do
-        On Error Resume Next
-        v = cel.Value
-        On Error GoTo 0
-
-        If Not IsError(v) Then
-            If IsNumeric(v) Then
-                If v <> "" And v <> 0 Then
-                    EsperarBloomberg = True
-                    Exit Do
-                End If
-            End If
-        End If
-
-        DoEvents                        ' deixa o add-in entregar o valor
-    Loop While Timer - t0 < segundos
-
-    On Error Resume Next
-    cel.ClearContents
-    On Error GoTo 0
-End Function
 
 
 ' A celula tem algo dentro?
@@ -299,9 +256,10 @@ End Sub
 
 Private Sub Workbook_Open()
     Dim addInAtivo As Boolean
-    addInAtivo = False
-
     Dim addIn As addIn
+    Dim t0 As Single
+
+    addInAtivo = False
     For Each addIn In Application.AddIns
         If InStr(1, UCase(addIn.Name), "BLOOMBERG") > 0 And addIn.Installed Then
             addInAtivo = True
@@ -311,21 +269,23 @@ Private Sub Workbook_Open()
 
     If Not addInAtivo Then Exit Sub
 
-    ' Instalado nao basta: so limpa depois que as funcoes _xll respondem de
-    ' verdade. Sem isso a limpeza pode acontecer na janela em que o add-in ainda
-    ' esta subindo, e a serie apagada nao volta.
-    If Not EsperarBloomberg(60) Then
-        ' MsgBox so quando ha' alguem na frente da tela: em automacao
-        ' (atualizar_bloomberg.py) uma caixa de dialogo trava o script.
-        If Application.Visible Then
-            MsgBox "O add-in do Bloomberg nao respondeu a tempo, entao os dados " & _
-                   "NAO foram limpos (evita perder as series)." & vbCrLf & vbCrLf & _
-                   "Se o Bloomberg estiver carregado e mesmo assim os dados nao " & _
-                   "atualizarem, rode a macro LimparParaBDHManual (Alt+F8).", _
-                   vbExclamation, "Agro.xlsm"
-        End If
-        Exit Sub
-    End If
+    ' Respiro para o add-in registrar as funcoes _xll antes da limpeza.
+    '
+    ' As outras oito planilhas ganham esse tempo de graca: elas varrem
+    ' UsedRange celula a celula (329 mil celulas na BBG_Dados), e a demora e'
+    ' o que da' folga para o add-in subir. Aqui a busca virou Find/FindNext e
+    ' ficou rapida demais -- entao o tempo passa a ser explicito.
+    '
+    ' De proposito NAO e' um teste: a versao anterior tentava confirmar o
+    ' add-in com uma BDP de sonda e travava quando a sonda falhava, mesmo com
+    ' o Bloomberg vivo. Quem garante que o Bloomberg esta de pe e' o
+    ' atualizar_bloomberg.py, que so abre planilha depois de passar num BDP --
+    ' e o guarda de regressao de #N/A dele restaura o backup se der errado.
+    ' Aqui nao ha nada que possa falhar e travar a abertura.
+    t0 = Timer
+    Do
+        DoEvents
+    Loop While Timer - t0 < 5
 
     Application.ScreenUpdating = False
     LimparAbaixoDasBDH
@@ -385,3 +345,5 @@ Public Sub LimparParaBDHManual()
     MsgBox "Pronto. Espere as celulas sairem de ""Requesting Data..."" antes de salvar.", _
            vbInformation, "Agro.xlsm"
 End Sub
+
+
