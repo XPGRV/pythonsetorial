@@ -5,13 +5,15 @@ import sys
 from copy import copy
 from pathlib import Path
 import openpyxl
-import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import drive_io
+import ibge_sidra
 
 XLSX_NAME="BeefBR.xlsm"; SHEET_NAME="Abates"
-URL="https://apisidra.ibge.gov.br/values/t/1092/n1/1/v/284,285/p/{periods}/c12716/115233,115234,115235/c18/55,56,111734,111735,57/c12529/118225"
+# Le pela API servicodados do IBGE (ibge_sidra.py): o apisidra.ibge.gov.br
+# passou a bloquear clientes que nao sao navegador (Cloudflare, set/2026).
+CONSULTA=dict(tabela="1092",variaveis=["284","285"],classificacoes=[("12716",["115233","115234","115235"]),("18",["55","56","111734","111735","57"]),("12529",["118225"])])
 COLS={"55":(3,15),"56":(4,16),"111734":(5,17),"111735":(6,18),"57":(7,19)}
 MONTH={"115233":1,"115234":2,"115235":3}
 
@@ -28,7 +30,7 @@ def recent_periods():
  for _ in range(8):
   key=f'{y}{q:02d}'
   try:
-   if requests.get(URL.format(periods=key),timeout=30).json()[1:]: break
+   if ibge_sidra.consultar(periodos=[key],timeout=30,**CONSULTA): break
   except Exception: pass
   q-=1
   if q==0:y,q=y-1,4
@@ -38,8 +40,8 @@ def recent_periods():
  return list(reversed(result))
 
 def fetch():
- r=requests.get(URL.format(periods=','.join(recent_periods())),timeout=90);r.raise_for_status();out={}
- for item in r.json()[1:]:
+ out={}
+ for item in ibge_sidra.consultar(periodos=recent_periods(),**CONSULTA):
   var,cat,mc,p=item.get('D2C'),item.get('D5C'),item.get('D4C'),item.get('D3C')
   if var not in {'284','285'} or cat not in COLS or mc not in MONTH or not p:continue
   raw=str(item.get('V','')).strip()

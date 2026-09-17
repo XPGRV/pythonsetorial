@@ -14,12 +14,12 @@ import datetime as dt
 from copy import copy
 from pathlib import Path
 
-import requests
 import openpyxl
 from openpyxl.utils import column_index_from_string
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import drive_io
+import ibge_sidra
 
 
 # ============================================================
@@ -29,12 +29,15 @@ DRIVE_ROOT = Path(
     r"G:\.shortcut-targets-by-id\11q1ngdqbySnDMCQSP4fiwPztT6ju2F4Z"
 )
 XLSX_NAME  = "FrangoBR.xlsm"
+# Le pela API servicodados do IBGE (ibge_sidra.py): o apisidra.ibge.gov.br
+# passou a bloquear clientes que nao sao navegador (Cloudflare, set/2026).
+CONSULTA = dict(
+    tabela="1094",
+    variaveis=["284", "285"],
+    classificacoes=[("12716", ["115233", "115234", "115235"]), ("12529", ["118225"])],
+)
 SHEET_NAME = "Production"
 
-API_URL_TEMPLATE = (
-    "https://apisidra.ibge.gov.br/values/t/1094/n1/1/v/284,285"
-    "/p/{periods}/c12716/115233,115234,115235/c12529/118225"
-)
 
 COL_HEADS  = "C"   # Animais abatidos (cabeças)
 COL_PESO   = "D"   # Peso total das carcaças (kg)
@@ -101,16 +104,13 @@ def parse_valor_safe(raw, var):
 
 
 def fetch_sidra(periods: list[str]) -> list[dict]:
-    url = API_URL_TEMPLATE.format(periods=",".join(periods))
     last_err = None
     for tentativa in range(1, MAX_RETRIES + 1):
         try:
-            r = requests.get(url, timeout=TIMEOUT)
-            r.raise_for_status()
-            data = r.json()
-            if not isinstance(data, list) or len(data) < 2:
-                raise RuntimeError(f"Payload inesperado: {data!r}")
-            return data[1:]  # linha 0 é header descritivo
+            data = ibge_sidra.consultar(periodos=periods, timeout=TIMEOUT, **CONSULTA)
+            if not data:
+                raise RuntimeError(f"Sem dado publicado para {periods}")
+            return data
         except Exception as e:
             last_err = e
             if tentativa < MAX_RETRIES:
