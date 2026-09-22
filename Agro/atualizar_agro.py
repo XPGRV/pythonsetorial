@@ -94,11 +94,17 @@ def last_formula(ws, col, start=FIRST_DATA_ROW):
     return None
 
 
-def last_numeric(ws, col, start=FIRST_DATA_ROW):
-    """Ultima linha com numero de verdade (texto de erro e vazio nao contam)."""
+def last_numeric(ws_valores, col, start=FIRST_DATA_ROW):
+    """Ultima linha com numero de verdade (texto de erro e vazio nao contam).
+
+    Recebe a aba aberta com data_only=True, ou seja, o VALOR calculado. Com a
+    serie viva, cada celula de preco abaixo da BDH e' membro da matriz: aberta
+    em modo formula ela aparece como "=", nunca como numero -- foi assim que
+    soja e milho ficaram com "precos ate 0" e os descontos pararam de andar.
+    """
     ultima = 0
-    for row in range(start, ws.max_row + 1):
-        if isinstance(ws.cell(row, col).value, (int, float)):
+    for row in range(start, ws_valores.max_row + 1):
+        if isinstance(ws_valores.cell(row, col).value, (int, float)):
             ultima = row
     return ultima
 
@@ -175,6 +181,10 @@ def main():
     file_id = drive_io.find_file_id(XLSX_NAME)
     path = drive_io.download_to_temp(file_id)
 
+    # Os precos sao lidos pelo valor calculado (cache), e so existe cache se
+    # ninguem salvou com openpyxl antes -- por isso este passo roda PRIMEIRO no
+    # pipeline.
+    wb_valores = openpyxl.load_workbook(path, data_only=True)
     wb = openpyxl.load_workbook(path, keep_vba=True, data_only=False)
     try:
         if SHEET_NAME not in wb.sheetnames:
@@ -182,10 +192,11 @@ def main():
                 f"Aba {SHEET_NAME!r} nao encontrada. Abas: {', '.join(wb.sheetnames)}"
             )
         ws = wb[SHEET_NAME]
+        ws_valores = wb_valores[SHEET_NAME]
 
         total = 0
         for nome, destino, fontes in GRUPOS:
-            alvo = max(last_numeric(ws, c) for c in fontes)
+            alvo = max(last_numeric(ws_valores, c) for c in fontes)
             molde = last_formula(ws, destino[0])
             changes = extend(ws, molde, alvo, destino, dry_run=args.dry_run)
             total += changes
@@ -198,6 +209,7 @@ def main():
             wb.save(path)
         print(f"{prefix}Consolidador Agro: {total} celula(s) estendida(s).")
     finally:
+        wb_valores.close()
         close_workbook(wb)
 
     if total and not args.dry_run:
