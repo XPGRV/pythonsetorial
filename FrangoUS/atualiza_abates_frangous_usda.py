@@ -20,6 +20,9 @@ import requests
 import openpyxl
 from openpyxl.utils import column_index_from_string
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import usda_ers
+
 
 # ============================================================
 # CONFIG
@@ -39,7 +42,9 @@ RETRY_SLEEP = 5
 REVISION_MONTHS = 12   # meses para verificar revisões retroativamente
 
 # Índice (0-based) na sheet SlaughterCounts-Full do USDA
-SC_BROILERS = 31
+# Nomes do cabecalho, nao posicoes: em out/2026 o USDA removeu uma coluna
+# de cada bloco e as posicoes fixas passaram a apontar para o vizinho.
+SC_BROILERS_NOME = "Broilers"
 
 COL_BROILERS = "H"
 
@@ -127,8 +132,9 @@ def download_usda() -> bytes:
 # ============================================================
 def parse_usda(conteudo: bytes) -> dict:
     """Retorna { (ano, mes): valor_broilers_1000heads }"""
-    wb = openpyxl.load_workbook(io.BytesIO(conteudo), read_only=True, data_only=True)
-    ws = wb["SlaughterCounts-Full"]
+    wb = usda_ers.abrir(conteudo)
+    ws = usda_ers.aba(wb, "SlaughterCounts", "SlaughterCounts-Full")
+    col = usda_ers.colunas(ws, SC_BROILERS_NOME)[SC_BROILERS_NOME]
 
     dados: dict[tuple, float] = {}
     for i, row in enumerate(ws.iter_rows(values_only=True)):
@@ -140,7 +146,7 @@ def parse_usda(conteudo: bytes) -> dict:
         ano, mes = parsed
         if ano < ANO_INICIO:
             continue
-        val = row[SC_BROILERS]
+        val = row[col]
         if val is not None:
             dados[(ano, mes)] = val
 

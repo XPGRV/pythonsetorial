@@ -18,6 +18,9 @@ import requests
 import openpyxl
 from openpyxl.utils import column_index_from_string
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import usda_ers
+
 XLSX_NAME = "BeefUS.xlsm"
 SHEET_NAME = "Abates"
 ANO_INICIO = 2000
@@ -28,14 +31,11 @@ MAX_RETRIES = 3
 RETRY_SLEEP = 5
 REVISION_MONTHS = 12
 
-SC_STEERS = 2
-SC_HEIFERS = 3
-SC_BEEFCOW = 5
-SC_DAIRYCOW = 6
-SC_BULLS = 7
-SC_CALVES_C = 8
-SW_CATTLE = 1
-SW_CALVES = 2
+# Nomes do cabecalho, nao posicoes: em out/2026 o USDA removeu uma coluna
+# de cada bloco e as posicoes fixas passaram a apontar para o vizinho.
+SC_NOMES = ("--Steers", "--Heifers", "--Beef cows", "--Dairy cows",
+            "--Bulls and stags", "Calves")
+SW_NOMES = ("Cattle", "Calves")
 
 COL_STEERS = "C"
 COL_HEIFERS = "D"
@@ -130,9 +130,10 @@ def download_usda() -> bytes:
 
 
 def parse_usda(conteudo: bytes) -> dict:
-    wb = openpyxl.load_workbook(io.BytesIO(conteudo), read_only=True, data_only=True)
+    wb = usda_ers.abrir(conteudo)
     counts = {}
-    ws_c = wb["SlaughterCounts-Full"]
+    ws_c = usda_ers.aba(wb, "SlaughterCounts", "SlaughterCounts-Full")
+    sc = usda_ers.colunas(ws_c, *SC_NOMES)
     for i, row in enumerate(ws_c.iter_rows(values_only=True)):
         if i < 3:
             continue
@@ -143,17 +144,18 @@ def parse_usda(conteudo: bytes) -> dict:
         if ano < ANO_INICIO:
             continue
         counts[(ano, mes)] = {
-            "steers": row[SC_STEERS],
-            "heifers": row[SC_HEIFERS],
-            "beef_cows": row[SC_BEEFCOW],
-            "dairy_cows": row[SC_DAIRYCOW],
-            "bulls": row[SC_BULLS],
-            "calves": row[SC_CALVES_C],
+            "steers": row[sc["--Steers"]],
+            "heifers": row[sc["--Heifers"]],
+            "beef_cows": row[sc["--Beef cows"]],
+            "dairy_cows": row[sc["--Dairy cows"]],
+            "bulls": row[sc["--Bulls and stags"]],
+            "calves": row[sc["Calves"]],
             "wt_cattle": None,
             "wt_calves": None,
         }
 
-    ws_w = wb["SlaughterWeights-Full"]
+    ws_w = usda_ers.aba(wb, "SlaughterWeights", "SlaughterWeights-Full")
+    sw = usda_ers.colunas(ws_w, *SW_NOMES)
     for i, row in enumerate(ws_w.iter_rows(values_only=True)):
         if i < 3:
             continue
@@ -162,8 +164,8 @@ def parse_usda(conteudo: bytes) -> dict:
             continue
         ano, mes = parsed
         if (ano, mes) in counts:
-            counts[(ano, mes)]["wt_cattle"] = row[SW_CATTLE]
-            counts[(ano, mes)]["wt_calves"] = row[SW_CALVES]
+            counts[(ano, mes)]["wt_cattle"] = row[sw["Cattle"]]
+            counts[(ano, mes)]["wt_calves"] = row[sw["Calves"]]
 
     print(f"  USDA: {len(counts)} meses mensais lidos ({ANO_INICIO}+)")
     return counts
