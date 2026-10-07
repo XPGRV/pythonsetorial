@@ -35,8 +35,14 @@ class Step:
     script: str
     args: tuple[str, ...] = ()
     # Toda etapa que falha deixa o pipeline seguir (ver docstring). O que
-    # `optional` muda e a severidade: True = aviso e job verde (fontes
-    # instaveis, ex. FRED atras de WAF); False = erro e job vermelho.
+    # `optional` muda e a severidade: True = aviso e job verde; False = erro
+    # e job vermelho.
+    #
+    # Em 07/10/2026 nenhuma etapa usa optional=True. As tres que usavam (GATS,
+    # FRED, IMEA) voltaram a ser normais a pedido: com o aviso ficando so no
+    # resumo do run, nao dava para distinguir fonte intermitente de fonte
+    # morta -- foi assim que o SIDRA passou duas semanas quebrado sem ninguem
+    # ver. O campo continua funcionando para quem precisar dele de novo.
     optional: bool = False
 
 def _summary(text: str) -> None:

@@ -10,10 +10,11 @@ STEPS = [
     Step("SECEX Graos", "Transportes/update_secex.py"),
     # O IMEA exige login (IMEA_USERNAME / IMEA_PASSWORD) e o api1.imea.com.br
     # nunca foi testado a partir de um runner do GitHub -- portal privado pode
-    # recusar IP de nuvem. Marcado como opcional: se cair, o SECEX ja coletado
-    # ainda sobe, e o frete continua vindo da execucao local ate se confirmar
-    # que a fonte responde. Ver o workflow "Diag conectividade".
-    Step("Frete de graos (IMEA)", "Transportes/imea_frete_extractor.py", optional=True),
+    # recusar IP de nuvem. Se cair, o SECEX ja coletado ainda sobe e o frete
+    # continua vindo da execucao local ate se confirmar que a fonte responde.
+    # Ver o workflow "Diag conectividade". Desde 07/10/2026 a falha deixa o
+    # job vermelho, em vez de so um aviso no resumo.
+    Step("Frete de graos (IMEA)", "Transportes/imea_frete_extractor.py"),
 ]
 
 if __name__ == "__main__":

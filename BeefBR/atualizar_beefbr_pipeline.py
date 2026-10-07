@@ -8,12 +8,13 @@ STEPS = [
     Step("Abates SIF", "BeefBR/atualiza_abates.py"),
     Step("Abates SIDRA", "BeefBR/atualiza_abates_sidra.py"),
     Step("SECEX Comex Stat", "BeefBR/update_secex.py"),
-    # optional=True: o GATS nao e API, e raspagem de um ASP.NET legado -- 8
-    # requisicoes em sequencia para montar uma consulta, qualquer uma pode cair.
-    # Medido em 19/08: 3 chamadas identicas seguidas deram 200 / timeout /
-    # timeout, com TCP e TLS saudaveis. Sendo obrigatorio, o timeout dele
-    # descartava o trabalho dos passos anteriores, que ja tinham funcionado.
-    Step("SECEX USDA GATS", "BeefBR/atualizar_secex.py", optional=True),
+    # O GATS nao e API, e raspagem de um ASP.NET legado -- 8 requisicoes em
+    # sequencia para montar uma consulta, qualquer uma pode cair. Medido em
+    # 19/08: 3 chamadas identicas seguidas deram 200 / timeout / timeout, com
+    # TCP e TLS saudaveis. Ja foi `optional`; desde 07/10/2026 falha vermelha
+    # como as demais, porque uma fonte parada de vez nao se distingue de
+    # intermitencia quando o aviso fica so no resumo do run.
+    Step("SECEX USDA GATS", "BeefBR/atualizar_secex.py"),
     Step(
         "Preco de exportacao bovina",
         "BeefBR/atualiza_px_bovina_balanca.py",
