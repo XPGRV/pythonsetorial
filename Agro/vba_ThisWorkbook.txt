@@ -202,6 +202,53 @@ Private Sub AtualizarExibicaoFuturos()
 End Sub
 
 
+' A BDH derramou como MATRIZ sobre a coluna inteira?
+'
+' O add-in reexpande a BDH a cada recalculo: a formula da linha 4 passa a
+' cobrir, por exemplo, G4:G9780, e as celulas de baixo viram membros da
+' matriz -- sem formula propria, mas com HasFormula = True. A guarda antiga
+' ("Not outputStart.HasFormula") as confundia com BDH empilhada da aba
+' Futuros e pulava o congelamento. Resultado: os numeros existiam so como
+' cache da formula, e a planilha abria em branco em qualquer PC sem o
+' Bloomberg -- e salvar nesse estado apagava a serie.
+'
+' Aqui a matriz inteira e' congelada de uma vez (ClearContents e atribuicao
+' parcial sao proibidos em matriz; na matriz toda sao permitidos) e a BDH
+' volta sozinha na celula de cima. Na proxima abertura o add-in expande de
+' novo, e no proximo salvamento isto congela de novo.
+Private Function CongelarDerrameEmMatriz(cel As Range) As Boolean
+    Dim faixa As Range
+    Dim conteudo As Variant
+    Dim formula As String
+
+    If Not cel.HasArray Then Exit Function
+
+    Set faixa = cel.CurrentArray
+    If faixa.Cells.Count <= 1 Then Exit Function
+
+    ' So age pela celula de cima: os membros aparecem na busca com a mesma
+    ' formula, e agir em cada um refaria o trabalho milhares de vezes.
+    If cel.Address <> faixa.Cells(1).Address Then Exit Function
+
+    formula = cel.formula
+    conteudo = faixa.Value
+
+    On Error GoTo Falhou
+    faixa.ClearContents
+    faixa.Value = conteudo
+    cel.FormulaArray = formula
+    CongelarDerrameEmMatriz = True
+    Exit Function
+
+Falhou:
+    ' Nao deixar a coluna vazia se algo falhar no meio do caminho.
+    On Error Resume Next
+    faixa.Value = conteudo
+    cel.FormulaArray = formula
+    CongelarDerrameEmMatriz = True
+End Function
+
+
 Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
     Dim ws As Worksheet
     Dim enderecos As Collection
@@ -224,8 +271,12 @@ Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
             Set cell = ws.Range(CStr(endereco))
             Set outputStart = cell.Offset(1, 0)
 
+            ' Derrame em matriz: congela o bloco inteiro de uma vez.
+            If CongelarDerrameEmMatriz(cell) Then
+                ' Nada mais a fazer nesta BDH.
+
             ' Formula abaixo = BDH empilhada, nao derrame: nao mexe.
-            If TemConteudo(outputStart) And Not outputStart.HasFormula Then
+            ElseIf TemConteudo(outputStart) And Not outputStart.HasFormula Then
                 ' Fim do bloco via End(xlDown), que e' nativo.
                 If Not TemConteudo(ws.Cells(outputStart.Row + 1, outputStart.Column)) Then
                     lastRow = outputStart.Row
@@ -337,5 +388,7 @@ Public Sub LimparParaBDHManual()
     MsgBox "Pronto. Espere as celulas sairem de ""Requesting Data..."" antes de salvar.", _
            vbInformation, "Agro.xlsm"
 End Sub
+
+
 
 
