@@ -201,7 +201,11 @@ def _get(url: str) -> list:
 
 
 def periodos_disponiveis(agregado_id: int) -> list[str]:
-    """Consulta os periodos publicados para um agregado (para o 7060, dinamico)."""
+    """Consulta os periodos publicados para um agregado (para o 7060, dinamico).
+
+    So existe no servicodados; o endereco antigo nao tem equivalente. Se ele
+    estiver fora, o chamador cai para o calendario (ver fetch_agregado).
+    """
     data = _get(f"{BASE_URL}/{agregado_id}/periodos")
     return [p["id"] for p in data]
 
@@ -211,43 +215,51 @@ def fetch_agregado(agg: dict) -> dict:
     codigos = agg["codigos"]
 
     if agg["fim"] is None:
-        disp = periodos_disponiveis(agg["id"])
-        ini = f"{agg['ini'][0]}{agg['ini'][1]:02d}"
-        periodos = [p for p in disp if p >= ini]
-        print(f"    {agg['id']}: {len(periodos)} periodos ({periodos[0]} -> {periodos[-1]})")
+        hoje = dt.date.today()
+        try:
+            disp = periodos_disponiveis(agg["id"])
+            ini = f"{agg['ini'][0]}{agg['ini'][1]:02d}"
+            periodos = [p for p in disp if p >= ini]
+            print(f"    {agg['id']}: {len(periodos)} periodos ({periodos[0]} -> {periodos[-1]})")
+        except Exception as exc:
+            # /periodos so existe no servicodados. Com ele fora, pedimos o
+            # calendario inteiro: mes sem publicacao simplesmente nao volta.
+            periodos = meses_entre(agg["ini"], (hoje.year, hoje.month))
+            print(f"    {agg['id']}: /periodos indisponivel ({type(exc).__name__}); "
+                  f"usando o calendario, {len(periodos)} meses.")
     else:
         periodos = meses_entre(agg["ini"], agg["fim"])
 
-    url = (
-        f"{BASE_URL}/{agg['id']}"
-        f"/periodos/{'|'.join(periodos)}"
-        f"/variaveis/{VARIAVEL}"
-        f"?localidades=N1[all]&classificacao=315[{','.join(codigos)}]"
+    # Pelo ibge_sidra, que tenta os dois enderecos do IBGE. A saida e plana:
+    # D3C = periodo, D4C = categoria da classificacao 315, V = valor.
+    linhas = ibge_sidra.consultar(
+        tabela=str(agg["id"]),
+        variaveis=[str(VARIAVEL)],
+        periodos=periodos,
+        classificacoes=[("315", list(codigos))],
+        timeout=TIMEOUT,
     )
-    data = _get(url)
 
     janela_ini = agg["ini"]
     janela_fim = agg["fim"]
 
     resultado: dict = {}
-    for bloco in data:
-        for res in bloco.get("resultados", []):
-            cat = res.get("classificacoes", [{}])[0].get("categoria", {})
-            codigo = next(iter(cat), None)
-            nome = codigos.get(str(codigo))
-            if not nome:
-                continue
-            serie = res.get("series", [{}])[0].get("serie", {})
-            for periodo, valor_str in serie.items():
-                ano, mes = int(periodo[:4]), int(periodo[4:])
-                if (ano, mes) < janela_ini:
-                    continue
-                if janela_fim is not None and (ano, mes) > janela_fim:
-                    continue
-                valor = parse_valor(valor_str)
-                if valor is None:
-                    continue
-                resultado.setdefault((ano, mes), {})[nome] = valor
+    for linha in linhas:
+        nome = codigos.get(str(linha.get("D4C")))
+        if not nome:
+            continue
+        periodo = str(linha.get("D3C") or "")
+        if len(periodo) != 6:
+            continue
+        ano, mes = int(periodo[:4]), int(periodo[4:])
+        if (ano, mes) < janela_ini:
+            continue
+        if janela_fim is not None and (ano, mes) > janela_fim:
+            continue
+        valor = parse_valor(linha.get("V"))
+        if valor is None:
+            continue
+        resultado.setdefault((ano, mes), {})[nome] = valor
     return resultado
 
 

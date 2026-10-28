@@ -30,6 +30,11 @@ import threading
 import requests
 
 BASE = "https://servicodados.ibge.gov.br/api/v3/agregados"
+BASE_ANTIGA = "https://apisidra.ibge.gov.br/values"
+
+# Qual endereco tentar primeiro. Reordenado em tempo de execucao: o
+# primeiro que responder vira o preferido do processo.
+_ORDEM = ["apisidra", "servicodados"]
 
 # Prazo de parede, somado sobre conectar + ler. O timeout do requests sozinho
 # nao basta: ele e por operacao de socket, e um servidor que entrega um byte
@@ -71,15 +76,28 @@ def buscar_json(url: str, params: dict | None = None, timeout: int = 60,
     return resultado["dados"]
 
 
-def consultar(
-    tabela: str,
-    variaveis: list[str],
-    periodos: list[str],
-    classificacoes: list[tuple[str, list[str]]],
-    localidades: str = "N1[all]",
-    timeout: int = 90,
-) -> list[dict]:
-    """Linhas da tabela no formato da apisidra. Lista vazia = sem dado publicado."""
+def _via_apisidra(tabela, variaveis, periodos, classificacoes, localidades, timeout):
+    """Endereco antigo. A resposta JA vem no formato de saida; so tiramos o
+    cabecalho descritivo, que e sempre a primeira linha."""
+    if localidades != "N1[all]":
+        raise RuntimeError(
+            f"apisidra: nao sei montar a URL para localidades={localidades!r}"
+        )
+    caminho = (
+        f"{BASE_ANTIGA}/t/{tabela}/n1/1"
+        f"/v/{','.join(variaveis)}/p/{','.join(periodos)}"
+    )
+    for cid, cats in classificacoes:
+        caminho += f"/c{cid}/{','.join(cats)}"
+
+    dados = buscar_json(caminho, timeout=timeout)
+    if not isinstance(dados, list) or not dados:
+        return []
+    return dados[1:]
+
+
+def _via_servicodados(tabela, variaveis, periodos, classificacoes, localidades, timeout):
+    """Endereco novo. Resposta aninhada, convertida para o formato de saida."""
     url = f"{BASE}/{tabela}/periodos/{'|'.join(periodos)}/variaveis/{'|'.join(variaveis)}"
     params = {
         "localidades": localidades,
@@ -102,3 +120,43 @@ def consultar(
                         linha[f"D{i}C"] = categoria.get(cid)
                     linhas.append(linha)
     return linhas
+
+
+_CAMINHOS = {"apisidra": _via_apisidra, "servicodados": _via_servicodados}
+
+
+def consultar(
+    tabela: str,
+    variaveis: list[str],
+    periodos: list[str],
+    classificacoes: list[tuple[str, list[str]]],
+    localidades: str = "N1[all]",
+    timeout: int = 90,
+) -> list[dict]:
+    """Linhas da tabela, pelo endereco do IBGE que estiver de pe.
+
+    Tenta os dois; so levanta erro se nenhum responder. Lista vazia continua
+    significando "o IBGE respondeu, mas nao ha dado publicado para o periodo".
+    """
+    falhas = []
+    for nome in list(_ORDEM):
+        try:
+            linhas = _CAMINHOS[nome](
+                tabela, variaveis, periodos, classificacoes, localidades, timeout
+            )
+        except Exception as exc:
+            falhas.append(f"{nome}: {type(exc).__name__} {exc}")
+            continue
+
+        if nome != _ORDEM[0]:
+            # Quem respondeu passa a ser o primeiro da fila: as proximas
+            # chamadas deste processo nao pagam de novo pelo que esta fora.
+            _ORDEM.remove(nome)
+            _ORDEM.insert(0, nome)
+            print(f"  [IBGE] usando {nome} (o outro endereco nao respondeu)", flush=True)
+        return linhas
+
+    raise RuntimeError(
+        "Nenhum endereco do IBGE respondeu para a tabela "
+        f"{tabela}, periodos {','.join(periodos)}. " + " | ".join(falhas)
+    )
