@@ -36,6 +36,7 @@ def localizar_planilha() -> Path:
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import drive_io
+import ibge_sidra
 _fid = drive_io.find_file_id(XLSX_NAME)
 EXCEL_PATH = drive_io.download_to_temp(_fid)
 
@@ -123,9 +124,7 @@ AGGREGATES = [
 def get_periodos_disponiveis(agregado_id: int) -> str:
     """Consulta os períodos disponíveis no SIDRA para um agregado e retorna string 'AAAAMM|...'."""
     url = f"https://servicodados.ibge.gov.br/api/v3/agregados/{agregado_id}/periodos"
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    periodos = [p["id"] for p in r.json()]
+    periodos = [p["id"] for p in ibge_sidra.buscar_json(url, timeout=30)]
     print(f"    -> {len(periodos)} periodos disponiveis ({periodos[0]} a {periodos[-1]})")
     return "|".join(periodos)
 
@@ -151,9 +150,7 @@ def fetch_aggregate(agg: dict) -> dict:
         f"/variaveis/63?localidades=N1[all]&classificacao=315[{codes_str}]"
     )
     print(f"\n  Buscando {agg['label']}...")
-    r = requests.get(url, timeout=60)
-    r.raise_for_status()
-    data = r.json()
+    data = ibge_sidra.buscar_json(url, timeout=60)
 
     result = {}  # {periodo: {nome: float}}
     for bloco in data:

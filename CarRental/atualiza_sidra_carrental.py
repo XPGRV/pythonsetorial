@@ -50,6 +50,7 @@ from openpyxl.utils import column_index_from_string
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import drive_io
+import ibge_sidra
 
 
 # ============================================================
@@ -189,9 +190,9 @@ def _get(url: str) -> list:
     last_err = None
     for tentativa in range(1, MAX_RETRIES + 1):
         try:
-            r = requests.get(url, timeout=TIMEOUT)
-            r.raise_for_status()
-            return r.json()
+            # Prazo de parede: o timeout do requests nao corta servidor que
+            # responde devagar (ver ibge_sidra.buscar_json).
+            return ibge_sidra.buscar_json(url, timeout=TIMEOUT)
         except Exception as e:
             last_err = e
             if tentativa < MAX_RETRIES:
