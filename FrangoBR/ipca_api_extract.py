@@ -1,6 +1,7 @@
 import os
 import re
 import copy
+import datetime as dt
 import requests
 from pathlib import Path
 from openpyxl import load_workbook
@@ -110,6 +111,7 @@ AGGREGATES = [
         "id": 7060,
         "label": "Jan/2020–presente (dinâmico)",
         "periodos": None,  # será buscado dinamicamente via metadados SIDRA
+        "inicio": "202001",  # usado se a descoberta de períodos não responder
         "codigos": {
             "7336":  "Presunto",
             "12304": "Salsicha",
@@ -121,12 +123,39 @@ AGGREGATES = [
     },
 ]
 
-def get_periodos_disponiveis(agregado_id: int) -> str:
-    """Consulta os períodos disponíveis no SIDRA para um agregado e retorna string 'AAAAMM|...'."""
-    url = f"https://servicodados.ibge.gov.br/api/v3/agregados/{agregado_id}/periodos"
-    periodos = [p["id"] for p in ibge_sidra.buscar_json(url, timeout=30)]
-    print(f"    -> {len(periodos)} periodos disponiveis ({periodos[0]} a {periodos[-1]})")
-    return "|".join(periodos)
+def meses_ate_hoje(inicio: str) -> list[str]:
+    """['AAAAMM', ...] do mês inicial até o mês corrente."""
+    ano, mes = int(inicio[:4]), int(inicio[4:])
+    hoje = dt.date.today()
+    saida = []
+    while (ano, mes) <= (hoje.year, hoje.month):
+        saida.append(f"{ano}{mes:02d}")
+        mes += 1
+        if mes > 12:
+            ano, mes = ano + 1, 1
+    return saida
+
+
+def get_periodos_disponiveis(agg: dict) -> list[str]:
+    """Períodos a consultar para um agregado.
+
+    A lista publicada só existe no servicodados; o endereço antigo não tem
+    equivalente. Se ele não responder, o calendário serve: mês sem publicação
+    não volta na consulta de dados.
+    """
+    if agg["periodos"]:
+        return agg["periodos"].split("|")
+
+    url = f"https://servicodados.ibge.gov.br/api/v3/agregados/{agg['id']}/periodos"
+    try:
+        periodos = [p["id"] for p in ibge_sidra.buscar_json(url, timeout=30)]
+        print(f"    -> {len(periodos)} periodos disponiveis ({periodos[0]} a {periodos[-1]})")
+        return periodos
+    except Exception as exc:
+        periodos = meses_ate_hoje(agg.get("inicio", "202001"))
+        print(f"    -> /periodos indisponivel ({type(exc).__name__}); "
+              f"usando o calendario, {len(periodos)} meses.")
+        return periodos
 
 def row_for(periodo: str) -> int:
     """Converte 'AAAAMM' para linha do Excel. Linha 3 = jan/2000."""
@@ -136,39 +165,35 @@ def row_for(periodo: str) -> int:
 def fetch_aggregate(agg: dict) -> dict:
     """Retorna {periodo: {nome: valor}} para um agregado."""
     codigos = agg["codigos"]
-    codes_str = ",".join(codigos.keys())
 
-    # Para o agregado 7060, busca períodos dinamicamente
-    periodos = agg["periodos"]
-    if periodos is None:
+    if agg["periodos"] is None:
         print(f"\n  Consultando períodos disponíveis para tabela {agg['id']}...")
-        periodos = get_periodos_disponiveis(agg["id"])
+    periodos = get_periodos_disponiveis(agg)
 
-    url = (
-        f"https://servicodados.ibge.gov.br/api/v3/agregados/{agg['id']}"
-        f"/periodos/{periodos}"
-        f"/variaveis/63?localidades=N1[all]&classificacao=315[{codes_str}]"
-    )
     print(f"\n  Buscando {agg['label']}...")
-    data = ibge_sidra.buscar_json(url, timeout=60)
+    # Pelos dois endereços do IBGE. Saída plana: D3C período, D4C categoria da
+    # classificação 315, V valor.
+    linhas = ibge_sidra.consultar(
+        tabela=str(agg["id"]),
+        variaveis=["63"],
+        periodos=periodos,
+        classificacoes=[("315", list(codigos))],
+        timeout=60,
+    )
 
     result = {}  # {periodo: {nome: float}}
-    for bloco in data:
-        for res in bloco.get("resultados", []):
-            # Identifica o subitem pelo código na classificação
-            cat = res.get("classificacoes", [{}])[0].get("categoria", {})
-            codigo = list(cat.keys())[0] if cat else None
-            nome = codigos.get(str(codigo))
-            if not nome:
-                continue
-
-            serie = res.get("series", [{}])[0].get("serie", {})
-            for periodo, valor_str in serie.items():
-                try:
-                    valor = float(str(valor_str).replace(",", "."))
-                except (ValueError, TypeError):
-                    valor = None
-                result.setdefault(periodo, {})[nome] = valor
+    for linha in linhas:
+        nome = codigos.get(str(linha.get("D4C")))
+        if not nome:
+            continue
+        periodo = str(linha.get("D3C") or "")
+        if len(periodo) != 6:
+            continue
+        try:
+            valor = float(str(linha.get("V")).replace(",", "."))
+        except (ValueError, TypeError):
+            valor = None
+        result.setdefault(periodo, {})[nome] = valor
 
     return result
 
