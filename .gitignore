@@ -28,3 +28,6 @@ venv/
 # Sistema
 .DS_Store
 Thumbs.db
+
+# PDFs do LDP baixados pelo coletor: pesados e refazíveis.
+BeefUS/data_usda_ers/_downloads/
