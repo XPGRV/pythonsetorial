@@ -53,8 +53,6 @@ DRIVE_NUM_RETRIES = int(os.environ.get("DRIVE_NUM_RETRIES", "5"))
 # reenviado. Em pedacos de 1 MB o progresso aparece no log e a retomada refaz
 # apenas o pedaco que falhou.
 DRIVE_UPLOAD_CHUNK_SIZE = 1024 * 1024
-# Quantas versoes antigas manter por planilha depois de cada upload.
-DRIVE_REVISOES_MANTIDAS = int(os.environ.get("DRIVE_REVISOES_MANTIDAS", "5"))
 SHARED_PATH_ENV = "DRIVE_IO_SHARED_PATH"
 SHARED_FILE_ID_ENV = "DRIVE_IO_SHARED_FILE_ID"
 SHARED_NAME_ENV = "DRIVE_IO_SHARED_NAME"
@@ -338,54 +336,6 @@ def _fix_single_cell_array_formulas(path: str) -> None:
         os.remove(tmp)
 
 
-def podar_revisoes(file_id: str, manter: int = DRIVE_REVISOES_MANTIDAS) -> int:
-    """Apaga as revisoes antigas do arquivo, guardando as `manter` mais novas.
-
-    O Drive guarda ate 100 versoes de um arquivo binario, e elas contam na
-    cota: as 10 planilhas somavam 1,38 GB de historico contra 16 MB de
-    conteudo atual. A versao em uso e sempre a mais recente, entao guardar as
-    N mais novas nunca encosta no que esta no ar.
-
-    Nunca levanta: o upload ja aconteceu, e falhar a faxina nao pode derrubar
-    a coleta.
-    """
-    if manter <= 0:
-        return 0
-    try:
-        svc = drive()
-        revisoes, token = [], None
-        while True:
-            r = svc.revisions().list(
-                fileId=file_id, pageSize=1000, pageToken=token,
-                fields="nextPageToken,revisions(id,modifiedTime)",
-            ).execute()
-            revisoes += r.get("revisions", [])
-            token = r.get("nextPageToken")
-            if not token:
-                break
-
-        revisoes.sort(key=lambda x: x["modifiedTime"])
-        velhas = revisoes[:-manter]
-        if not velhas:
-            return 0
-
-        apagadas = 0
-        for rev in velhas:
-            try:
-                svc.revisions().delete(fileId=file_id, revisionId=rev["id"]).execute()
-                apagadas += 1
-            except Exception:
-                pass          # revisao sozinha nao merece barulho
-        if apagadas:
-            print(f"[Drive] {apagadas} versoes antigas removidas "
-                  f"(mantidas as {manter} ultimas).", flush=True)
-        return apagadas
-    except Exception as exc:
-        print(f"[Drive] Nao consegui podar as versoes antigas ({exc}); "
-              "o upload esta feito.", flush=True)
-        return 0
-
-
 def update_file(file_id: str, local_path: str, mime: str = MIME_XLSM) -> dict:
     """Sobrescreve o conteudo do arquivo existente no Drive (in-place)."""
     shared_path = os.environ.get(SHARED_PATH_ENV)
@@ -448,5 +398,4 @@ def update_file(file_id: str, local_path: str, mime: str = MIME_XLSM) -> dict:
                 ultimo_progresso = progresso
 
     print(f"[Drive] Upload concluido em {time.monotonic() - t0:.1f}s.", flush=True)
-    podar_revisoes(file_id)
     return res
