@@ -181,6 +181,23 @@ Private Sub AtualizarExibicaoFuturos()
                              ws.Cells(rFormula - 2, colTk + 3)).ClearContents
                 End If
 
+                ' A linha de respiro (rFormula-1) tambem precisa ficar sem
+                ' ticker. Quando o ciclo diminui, o atualizar_futuros.py move as
+                ' formulas para PRIMEIRA_LINHA+n+1 e o respiro cai exatamente em
+                ' cima da ultima linha da exibicao velha -- que a limpeza acima
+                ' nao alcanca. Sobrava um contrato repetido grudado no bloco
+                ' novo (o CTZ7 em dobro no algodao), e o parser da dashboard,
+                ' que corta a leitura no primeiro ticker vazio, seguia direto
+                ' para a metade das formulas e duplicava a curva inteira.
+                '
+                ' So do ticker para a direita: a coluna da data guarda um numero
+                ' ali (100 no algodao, 112 na soja, 108 no milho) que ninguem
+                ' sabe de onde vem e que o parser nao le. Nao custa preservar.
+                If rFormula - 1 >= PRIMEIRA_LINHA Then
+                    ws.Range(ws.Cells(rFormula - 1, colTk), _
+                             ws.Cells(rFormula - 1, colTk + 3)).ClearContents
+                End If
+
                 ' copia valores: formulas -> exibicao
                 For linha = 0 To nLinhas - 1
                     For c = -1 To 3
@@ -216,6 +233,28 @@ End Sub
 ' parcial sao proibidos em matriz; na matriz toda sao permitidos) e a BDH
 ' volta sozinha na celula de cima. Na proxima abertura o add-in expande de
 ' novo, e no proximo salvamento isto congela de novo.
+' Ha pelo menos um numero neste bloco de valores?
+' Erro (#N/A da BDH sem resposta) e texto nao contam.
+Private Function TemNumero(conteudo As Variant) As Boolean
+    Dim v As Variant
+
+    If Not IsArray(conteudo) Then
+        If IsError(conteudo) Then Exit Function
+        TemNumero = IsNumeric(conteudo)
+        Exit Function
+    End If
+
+    For Each v In conteudo
+        If Not IsError(v) Then
+            If IsNumeric(v) And v <> "" Then
+                TemNumero = True
+                Exit Function
+            End If
+        End If
+    Next v
+End Function
+
+
 Private Function CongelarDerrameEmMatriz(cel As Range) As Boolean
     Dim faixa As Range
     Dim conteudo As Variant
@@ -232,6 +271,13 @@ Private Function CongelarDerrameEmMatriz(cel As Range) As Boolean
 
     formula = cel.formula
     conteudo = faixa.Value
+
+    ' Salvaguarda: so congela se houver numero de verdade na coluna.
+    ' Congelar aqui e' definitivo -- a formula sai e sobra o que estiver na
+    ' celula. Se a BDH ainda nao respondeu (ou respondeu #N/A), congelar
+    ' gravaria o vazio por cima da serie. Melhor deixar a formula viva e
+    ' tentar de novo na proxima abertura.
+    If Not TemNumero(conteudo) Then Exit Function
 
     On Error GoTo Falhou
     faixa.ClearContents

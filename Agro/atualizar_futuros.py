@@ -132,6 +132,26 @@ def escrever_bloco(ws, col_tk, tickers, inicio, molde, dry_run=False):
                 cel.border = copy(origem.border)
         escritas += 1
 
+    # A linha de respiro, logo acima das formulas, tem de ficar SEM ticker.
+    #
+    # Quando o ciclo encurta, o bloco sobe (destino = PRIMEIRA_LINHA + n + 1) e
+    # o respiro cai exatamente em cima da ultima linha da exibicao antiga. O
+    # macro da planilha limpa a exibicao ate uma linha antes do respiro, entao
+    # essa sobra ficava: um contrato repetido grudado no bloco novo -- foi o
+    # CTZ7 em dobro no algodao.
+    #
+    # Para a dashboard isso nao e cosmetico. O parser le a coluna do ticker e
+    # corta no primeiro vazio; com o respiro preenchido ele nao ve o corte,
+    # segue para a metade das formulas e duplica a curva inteira.
+    #
+    # So do ticker para a direita: a coluna da data guarda um numero ali (100
+    # no algodao, 112 na soja, 108 no milho) de origem desconhecida, que o
+    # parser nao le. Fica onde esta.
+    respiro = inicio - 1
+    if not dry_run and respiro >= PRIMEIRA_LINHA:
+        for desloc in (0, 1, 2, 3):
+            ws.cell(respiro, col_tk + desloc).value = None
+
     # o ciclo pode ter encurtado: apaga o que sobrou embaixo
     row = inicio + len(tickers)
     while row <= ULTIMA_LINHA and ws.cell(row, col_tk).value:
